@@ -34,6 +34,11 @@ SPEED_OPTIONS = [
     ("一条一条顺序剪（最稳）", "1"),
     ("同时剪 2 条（并行）", "2"),
     ("同时剪 3 条（高配并行）", "3"),
+    ("同时剪 4 条（3060 满载并行）", "4"),
+]
+FPS_OPTIONS = [
+    ("保持原片 30 帧（推荐，省一半CPU与时间）", 30),
+    ("60 帧（高帧率）", 60),
 ]
 QUALITY_OPTIONS = [
     ("高清推荐（画质清晰、体积适中）", 10),
@@ -158,6 +163,7 @@ class AutoClipApp(tk.Tk):
         self.var_speed = tk.StringVar(value=_code_to_label(SPEED_OPTIONS, self.cfg.concurrency_mode))
         self.var_enhance = tk.StringVar(value=_code_to_label(ENHANCE_OPTIONS, self.cfg.enhance_mode))
         self.var_quality = tk.StringVar(value=_code_to_label(QUALITY_OPTIONS, self.cfg.video_bitrate_mbps))
+        self.var_fps = tk.StringVar(value=_code_to_label(FPS_OPTIONS, self.cfg.output_fps))
         self.var_output_dir = tk.StringVar(value=self.cfg.output_dir)
 
         self.var_feathered_mask = tk.BooleanVar(value=self.cfg.enable_feathered_mask)
@@ -380,6 +386,16 @@ class AutoClipApp(tk.Tk):
         ).grid(row=r, column=1, sticky=tk.EW, pady=6)
 
         r += 1
+        ttk.Label(tab_basic, text="导出帧率:").grid(row=r, column=0, sticky=tk.W, pady=6)
+        ttk.Combobox(
+            tab_basic,
+            textvariable=self.var_fps,
+            values=[x[0] for x in FPS_OPTIONS],
+            state="readonly",
+            width=32,
+        ).grid(row=r, column=1, sticky=tk.EW, pady=6)
+
+        r += 1
         ttk.Label(tab_basic, text="批量剪辑速度:").grid(row=r, column=0, sticky=tk.W, pady=6)
         ttk.Combobox(
             tab_basic,
@@ -532,6 +548,7 @@ class AutoClipApp(tk.Tk):
         self.cfg.concurrency_mode = _label_to_code(SPEED_OPTIONS, self.var_speed.get())
         self.cfg.enhance_mode = _label_to_code(ENHANCE_OPTIONS, self.var_enhance.get())
         self.cfg.video_bitrate_mbps = int(_label_to_code(QUALITY_OPTIONS, self.var_quality.get()))
+        self.cfg.output_fps = int(_label_to_code(FPS_OPTIONS, self.var_fps.get()))
         self.cfg.output_dir = self.var_output_dir.get().strip()
         self.cfg.enable_feathered_mask = self.var_feathered_mask.get()
         self.cfg.dedup_level = "standard" if self.var_dedup_on.get() else "off"

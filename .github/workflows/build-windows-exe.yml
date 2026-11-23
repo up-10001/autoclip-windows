@@ -43,34 +43,14 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Package v2.0.1 DirectML GPU hot-patch zip
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path patch_pkg/_internal | Out-Null
-          Copy-Item "dist/AutoClip/AutoClip.exe" "patch_pkg/AutoClip.exe" -Force
-          Get-ChildItem "dist/AutoClip/_internal" -Directory | Where-Object {
-            $_.Name -match "^(rapidocr|cv2|pyclipper|shapely|yaml|PIL|onnxruntime)" -or $_.Name -like "*.libs"
-          } | Where-Object {
-            $_.Name -notmatch "^(nvidia|ctranslate2|av|tokenizers)"
-          } | ForEach-Object {
-            Write-Host "Packing dir: $($_.Name)"
-            Copy-Item $_.FullName "patch_pkg/_internal/$($_.Name)" -Recurse -Force
-          }
-          Get-ChildItem "dist/AutoClip/_internal" -File | Where-Object {
-            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six|libgeos|msvcp|vcruntime|onnxruntime|DirectML)"
-          } | ForEach-Object {
-            Write-Host "Packing file: $($_.Name)"
-            Copy-Item $_.FullName "patch_pkg/_internal/" -Force
-          }
-          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v2.0.1-DirectML-patch.zip" -Force
-
-      - name: Publish v2.0.1 DirectML GPU Release
+      - name: Publish v2.0.2 tiny EXE hotfix (~10MB)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          if (gh release view v2.0.1 2>$null) {
-            gh release upload v2.0.1 AutoClip-v2.0.1-DirectML-patch.zip --clobber
+          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v2.0.2.exe" -Force
+          if (gh release view v2.0.2 2>$null) {
+            gh release upload v2.0.2 AutoClip-v2.0.2.exe --clobber
           } else {
-            gh release create v2.0.1 AutoClip-v2.0.1-DirectML-patch.zip --title "AutoClip v2.0.1 True GPU Patch (DirectML + NVDEC)" --notes "Switch OCR from CUDA to Windows native DirectML GPU (zero missing CUDA DLLs) + FFmpeg NVDEC hardware decode so RTX 3060 actually runs OCR at full speed and CPU stays low."
+            gh release create v2.0.2 AutoClip-v2.0.2.exe --title "AutoClip v2.0.2 Low-CPU GPU Render Hotfix (~10MB)" --notes "Enable CUDA NVDEC decode in render pass, remove heavy CPU hqdn3d, optimize mask to top 28pct strip, add 30fps/60fps selector. Replace AutoClip.exe directly."
           }

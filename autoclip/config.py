@@ -81,7 +81,7 @@ class AppConfig:
 
     # 输出配置
     output_format: str = "mp4"
-    output_fps: int = 60
+    output_fps: int = 30  # 默认保持原片 30fps（画质一致、CPU/导出耗时直接砍半，界面可切 60fps）
     video_bitrate_mbps: int = 10
     output_dir: str = ""
 
