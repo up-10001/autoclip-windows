@@ -1,4 +1,10 @@
-"""人性化中文图形界面（v2.0.0）：大白话选项 + 多账号飘动水印配额分配 + 实时效果预览。"""
+"""AutoClip 智剪 Pro v3.0 - 正式产品级图形界面。
+
+设计理念：
+- 极简三步主流程：导入素材 → 指定账号水印（支持一键按量分配 + 手动多选/双击单条指定）→ 选择导出目录并一键开剪；
+- 主界面只保留高频操作，密钥与低频技术参数收纳进干净的弹窗，全部自动保存记忆；
+- 支持全局总进度条、仅重剪失败项、可折叠日志、实时预览（含对应账号水印与安全区红线）。
+"""
 
 from __future__ import annotations
 
@@ -22,33 +28,46 @@ from .renderer import render_preview_frame
 from .translator import SubtitleItem, test_deepseek_connection
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".flv", ".wmv", ".webm"}
+NO_WM_LABEL = "（不加水印）"
 
-# 大白话中文映射（界面彻底去除英文专业术语）
 ENHANCE_OPTIONS = [
-    ("极速高清增强（推荐，不减速）", "fast"),
-    ("真·AI超清（3060显卡，较慢）", "ai"),
+    ("极速高清增强（推荐）", "fast"),
+    ("真·AI超清（较慢）", "ai"),
     ("关闭", "off"),
 ]
 SPEED_OPTIONS = [
-    ("智能自动（按显卡自动并行）", "auto"),
-    ("一条一条顺序剪（最稳）", "1"),
-    ("同时剪 2 条（并行）", "2"),
-    ("同时剪 3 条（高配并行）", "3"),
-    ("同时剪 4 条（3060 满载并行）", "4"),
-]
-FPS_OPTIONS = [
-    ("保持原片 30 帧（推荐，省一半CPU与时间）", 30),
-    ("60 帧（高帧率）", 60),
+    ("智能自动（3060 并行 4 路）", "auto"),
+    ("一条一条顺序剪（低占用）", "1"),
+    ("同时剪 2 条", "2"),
+    ("同时剪 3 条", "3"),
+    ("同时剪 4 条（满速）", "4"),
 ]
 QUALITY_OPTIONS = [
     ("高清推荐（画质清晰、体积适中）", 10),
     ("超清高画质（体积稍大）", 14),
     ("省空间标准（上传最快）", 6),
 ]
+FPS_OPTIONS = [
+    ("保持原片 30 帧（推荐，省一半时间）", 30),
+    ("60 帧（高帧率）", 60),
+]
 SUB_SOURCE_OPTIONS = [
     ("自动对齐画面英文字幕（推荐，100%同步）", "ocr_first"),
     ("仅听声音识别（无英文字幕的视频用）", "whisper"),
 ]
+
+# 现代浅色产品配色
+BG_APP = "#F3F5F9"
+BG_CARD = "#FFFFFF"
+BG_HEADER = "#1E293B"
+FG_HEADER = "#FFFFFF"
+ACCENT_BLUE = "#2563EB"
+ACCENT_BLUE_HOVER = "#1D4ED8"
+ACCENT_RED = "#DC2626"
+ACCENT_GREEN = "#16A34A"
+TEXT_MAIN = "#0F172A"
+TEXT_MUTED = "#64748B"
+BORDER_COLOR = "#E2E8F0"
 
 
 def _code_to_label(options: list[tuple[str, Any]], code: Any) -> str:
@@ -63,6 +82,230 @@ def _label_to_code(options: list[tuple[str, Any]], label: str) -> Any:
         if l == label:
             return c
     return options[0][1]
+
+
+class ApiKeyDialog(tk.Toplevel):
+    """独立的 DeepSeek 翻译密钥配置弹窗。"""
+
+    def __init__(self, parent: "AutoClipApp") -> None:
+        super().__init__(parent)
+        self.parent_app = parent
+        self.title("DeepSeek 翻译密钥设置")
+        self.geometry("540x250")
+        self.resizable(False, False)
+        self.configure(bg=BG_CARD)
+        self.transient(parent)
+        self.grab_set()
+
+        self.var_key = tk.StringVar(value=parent.cfg.api_key)
+        self.var_url = tk.StringVar(value=parent.cfg.api_base_url)
+        self.var_model = tk.StringVar(value=parent.cfg.api_model)
+        self.var_show = tk.BooleanVar(value=False)
+
+        body = ttk.Frame(self, padding=18, style="Card.TFrame")
+        body.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(body, text="DeepSeek API 密钥:", style="CardBold.TLabel").grid(row=0, column=0, sticky=tk.W, pady=8)
+        self.entry_k = ttk.Entry(body, textvariable=self.var_key, width=36, show="*")
+        self.entry_k.grid(row=0, column=1, sticky=tk.EW, padx=(8, 4), pady=8)
+        ttk.Checkbutton(body, text="显示", variable=self.var_show, command=self._toggle, style="Card.TCheckbutton").grid(
+            row=0, column=2, pady=8
+        )
+
+        ttk.Label(body, text="接口地址（默认即可）:", style="Card.TLabel").grid(row=1, column=0, sticky=tk.W, pady=6)
+        ttk.Entry(body, textvariable=self.var_url).grid(row=1, column=1, columnspan=2, sticky=tk.EW, padx=(8, 0), pady=6)
+
+        ttk.Label(body, text="模型名称（默认即可）:", style="Card.TLabel").grid(row=2, column=0, sticky=tk.W, pady=6)
+        ttk.Entry(body, textvariable=self.var_model).grid(row=2, column=1, columnspan=2, sticky=tk.EW, padx=(8, 0), pady=6)
+
+        self.lbl_status = ttk.Label(body, text="填写完成后可点“测试连接”确认密钥可用。", foreground=TEXT_MUTED, style="Card.TLabel")
+        self.lbl_status.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(8, 4))
+
+        btn_bar = ttk.Frame(body, style="Card.TFrame")
+        btn_bar.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=(12, 0))
+        ttk.Button(btn_bar, text="测试连接", command=self._on_test).pack(side=tk.LEFT)
+        ttk.Button(btn_bar, text="保存并关闭", style="Primary.TButton", command=self._on_save).pack(side=tk.RIGHT)
+        ttk.Button(btn_bar, text="取消", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        body.columnconfigure(1, weight=1)
+
+    def _toggle(self) -> None:
+        self.entry_k.configure(show="" if self.var_show.get() else "*")
+
+    def _apply_to_cfg(self) -> None:
+        self.parent_app.cfg.api_key = self.var_key.get().strip()
+        self.parent_app.cfg.api_base_url = self.var_url.get().strip() or "https://api.deepseek.com"
+        self.parent_app.cfg.api_model = self.var_model.get().strip() or "deepseek-chat"
+        save_config(self.parent_app.cfg)
+        self.parent_app._update_api_badge()
+
+    def _on_test(self) -> None:
+        self._apply_to_cfg()
+        self.lbl_status.configure(text="正在测试连接，请稍候...", foreground=ACCENT_BLUE)
+        self.update_idletasks()
+        ok, msg = test_deepseek_connection(self.parent_app.cfg)
+        self.lbl_status.configure(text=msg, foreground=ACCENT_GREEN if ok else ACCENT_RED)
+
+    def _on_save(self) -> None:
+        self._apply_to_cfg()
+        self.destroy()
+
+
+class AdvancedSettingsDialog(tk.Toplevel):
+    """收纳低频专业参数的设置弹窗，保持主界面清爽。"""
+
+    def __init__(self, parent: "AutoClipApp") -> None:
+        super().__init__(parent)
+        self.parent_app = parent
+        cfg = parent.cfg
+        self.title("高级参数设置")
+        self.geometry("560x520")
+        self.resizable(False, False)
+        self.configure(bg=BG_CARD)
+        self.transient(parent)
+        self.grab_set()
+
+        self.var_sub_src = tk.StringVar(value=_code_to_label(SUB_SOURCE_OPTIONS, cfg.subtitle_source))
+        self.var_speed = tk.StringVar(value=_code_to_label(SPEED_OPTIONS, cfg.concurrency_mode))
+        self.var_quality = tk.StringVar(value=_code_to_label(QUALITY_OPTIONS, cfg.video_bitrate_mbps))
+        self.var_fps = tk.StringVar(value=_code_to_label(FPS_OPTIONS, cfg.output_fps))
+        self.var_dedup = tk.BooleanVar(value=(cfg.dedup_level != "off"))
+        self.var_loudnorm = tk.BooleanVar(value=cfg.audio_loudnorm)
+        self.var_skip = tk.BooleanVar(value=cfg.skip_existing)
+        self.var_srt = tk.BooleanVar(value=cfg.keep_srt)
+
+        self.var_font = tk.StringVar(value=cfg.font_name)
+        self.var_fsize = tk.IntVar(value=cfg.font_size)
+        self.var_fcolor = tk.StringVar(value=cfg.font_color)
+        self.var_posy = tk.DoubleVar(value=cfg.position_y_pct)
+        self.var_maxc = tk.IntVar(value=cfg.max_chars_per_line)
+        self.var_wmsize = tk.IntVar(value=cfg.watermark_font_size)
+
+        body = ttk.Frame(self, padding=16, style="Card.TFrame")
+        body.pack(fill=tk.BOTH, expand=True)
+
+        r = 0
+        ttk.Label(body, text="字幕识别方式:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        ttk.Combobox(body, textvariable=self.var_sub_src, values=[x[0] for x in SUB_SOURCE_OPTIONS], state="readonly", width=34).grid(row=r, column=1, columnspan=3, sticky=tk.EW, pady=5)
+
+        r += 1
+        ttk.Label(body, text="批量并行速度:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        ttk.Combobox(body, textvariable=self.var_speed, values=[x[0] for x in SPEED_OPTIONS], state="readonly").grid(row=r, column=1, columnspan=3, sticky=tk.EW, pady=5)
+
+        r += 1
+        ttk.Label(body, text="导出清晰度:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        ttk.Combobox(body, textvariable=self.var_quality, values=[x[0] for x in QUALITY_OPTIONS], state="readonly").grid(row=r, column=1, columnspan=3, sticky=tk.EW, pady=5)
+
+        r += 1
+        ttk.Label(body, text="导出帧率:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        ttk.Combobox(body, textvariable=self.var_fps, values=[x[0] for x in FPS_OPTIONS], state="readonly").grid(row=r, column=1, columnspan=3, sticky=tk.EW, pady=5)
+
+        r += 1
+        ttk.Separator(body).grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=10)
+
+        r += 1
+        ttk.Label(body, text="字幕与水印字体:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(body, textvariable=self.var_font, width=18).grid(row=r, column=1, sticky=tk.W, pady=5)
+        ttk.Label(body, text="字幕字号:", style="Card.TLabel").grid(row=r, column=2, sticky=tk.W, padx=(10, 4))
+        ttk.Spinbox(body, from_=40, to=120, textvariable=self.var_fsize, width=7).grid(row=r, column=3, sticky=tk.W)
+
+        r += 1
+        ttk.Label(body, text="字幕颜色:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        cbox = ttk.Frame(body, style="Card.TFrame")
+        cbox.grid(row=r, column=1, sticky=tk.W, pady=5)
+        ttk.Entry(cbox, textvariable=self.var_fcolor, width=9).pack(side=tk.LEFT)
+        ttk.Button(cbox, text="选色", width=5, command=self._pick_color).pack(side=tk.LEFT, padx=4)
+        ttk.Label(body, text="水印字号:", style="Card.TLabel").grid(row=r, column=2, sticky=tk.W, padx=(10, 4))
+        ttk.Spinbox(body, from_=24, to=72, textvariable=self.var_wmsize, width=7).grid(row=r, column=3, sticky=tk.W)
+
+        r += 1
+        ttk.Label(body, text="字幕垂直位置:", style="Card.TLabel").grid(row=r, column=0, sticky=tk.W, pady=5)
+        prow = ttk.Frame(body, style="Card.TFrame")
+        prow.grid(row=r, column=1, sticky=tk.EW, pady=5)
+        ttk.Scale(prow, from_=60.0, to=92.0, variable=self.var_posy, orient=tk.HORIZONTAL).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        lbl_p = ttk.Label(prow, text=f"{self.var_posy.get():.1f}%", width=6, style="Card.TLabel")
+        lbl_p.pack(side=tk.LEFT)
+        self.var_posy.trace_add("write", lambda *_: lbl_p.config(text=f"{self.var_posy.get():.1f}%"))
+        ttk.Label(body, text="单行最多字数:", style="Card.TLabel").grid(row=r, column=2, sticky=tk.W, padx=(10, 4))
+        ttk.Spinbox(body, from_=8, to=20, textvariable=self.var_maxc, width=7).grid(row=r, column=3, sticky=tk.W)
+
+        r += 1
+        ttk.Separator(body).grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=10)
+
+        r += 1
+        ttk.Checkbutton(body, text="开启隐形防搬运去重（微缩放 + 微调色 + 清除原属性）", variable=self.var_dedup, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
+        r += 1
+        ttk.Checkbutton(body, text="音量自动放大均衡（清晰不刺耳，适合中老年人）", variable=self.var_loudnorm, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
+        r += 1
+        ttk.Checkbutton(body, text="已剪过的成品自动跳过（断点续剪不重复花钱）", variable=self.var_skip, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
+        r += 1
+        ttk.Checkbutton(body, text="导出时顺便保存一份 SRT 字幕文件", variable=self.var_srt, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
+
+        r += 1
+        btn_bar = ttk.Frame(body, style="Card.TFrame")
+        btn_bar.grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=(14, 0))
+        ttk.Button(btn_bar, text="保存设置", style="Primary.TButton", command=self._on_save).pack(side=tk.RIGHT)
+        ttk.Button(btn_bar, text="取消", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        body.columnconfigure(1, weight=1)
+
+    def _pick_color(self) -> None:
+        _, hex_c = colorchooser.askcolor(initialcolor=self.var_fcolor.get(), title="选择字幕颜色")
+        if hex_c:
+            self.var_fcolor.set(hex_c.upper())
+
+    def _on_save(self) -> None:
+        cfg = self.parent_app.cfg
+        cfg.subtitle_source = _label_to_code(SUB_SOURCE_OPTIONS, self.var_sub_src.get())
+        cfg.concurrency_mode = _label_to_code(SPEED_OPTIONS, self.var_speed.get())
+        cfg.video_bitrate_mbps = int(_label_to_code(QUALITY_OPTIONS, self.var_quality.get()))
+        cfg.output_fps = int(_label_to_code(FPS_OPTIONS, self.var_fps.get()))
+        cfg.dedup_level = "standard" if self.var_dedup.get() else "off"
+        cfg.audio_loudnorm = self.var_loudnorm.get()
+        cfg.skip_existing = self.var_skip.get()
+        cfg.keep_srt = self.var_srt.get()
+        cfg.font_name = self.var_font.get().strip() or cfg.font_name
+        cfg.font_size = int(self.var_fsize.get())
+        cfg.font_color = self.var_fcolor.get().strip() or "#F4EA46"
+        cfg.position_y_pct = round(float(self.var_posy.get()), 1)
+        cfg.max_chars_per_line = int(self.var_maxc.get())
+        cfg.watermark_font_size = int(self.var_wmsize.get())
+        save_config(cfg)
+        self.parent_app._append_log("高级参数已更新并自动保存。")
+        self.destroy()
+
+
+class AssignWatermarkDialog(tk.Toplevel):
+    """双击视频行或右键时弹出的单条/多条快速指定水印弹窗。"""
+
+    def __init__(self, parent: tk.Tk, title_text: str, account_names: list[str], current: str) -> None:
+        super().__init__(parent)
+        self.title("指定水印账号")
+        self.geometry("380x170")
+        self.resizable(False, False)
+        self.configure(bg=BG_CARD)
+        self.transient(parent)
+        self.grab_set()
+        self.chosen: Optional[str] = None
+
+        body = ttk.Frame(self, padding=16, style="Card.TFrame")
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text=title_text, style="CardBold.TLabel").pack(anchor=tk.W, pady=(0, 8))
+
+        vals = [NO_WM_LABEL] + account_names
+        self.var_choice = tk.StringVar(value=current if current else NO_WM_LABEL)
+        cb = ttk.Combobox(body, textvariable=self.var_choice, values=vals, width=32)
+        cb.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(body, text="提示：可直接下拉选择已有账号，也可直接手打新水印文字。", foreground=TEXT_MUTED, style="Card.TLabel").pack(anchor=tk.W)
+
+        btns = ttk.Frame(body, style="Card.TFrame")
+        btns.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(btns, text="确定", style="Primary.TButton", command=self._ok).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="取消", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        self.bind("<Return>", lambda *_: self._ok())
+
+    def _ok(self) -> None:
+        v = self.var_choice.get().strip()
+        self.chosen = "" if v == NO_WM_LABEL else v
+        self.destroy()
 
 
 class SubtitleReviewDialog(tk.Toplevel):
@@ -97,7 +340,7 @@ class SubtitleReviewDialog(tk.Toplevel):
         btn_bar = ttk.Frame(self)
         btn_bar.pack(fill=tk.X, padx=12, pady=10)
         ttk.Button(btn_bar, text="取消这条", command=self._on_cancel).pack(side=tk.RIGHT, padx=6)
-        ttk.Button(btn_bar, text="确认并导出", command=self._on_confirm).pack(side=tk.RIGHT, padx=6)
+        ttk.Button(btn_bar, text="确认并导出", style="Primary.TButton", command=self._on_confirm).pack(side=tk.RIGHT, padx=6)
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
     def _on_confirm(self) -> None:
@@ -129,379 +372,405 @@ class SubtitleReviewDialog(tk.Toplevel):
 class AutoClipApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(f"自动剪辑工具 AutoClip v{__version__}（中老年字幕 · 飘动水印 · 无痕去重）")
-        self.geometry("1240x820")
-        self.minsize(1100, 740)
+        self.title(f"AutoClip 智剪 Pro v{__version__}")
+        self.geometry("1280x840")
+        self.minsize(1120, 740)
+        self.configure(bg=BG_APP)
 
         self.cfg: AppConfig = load_config()
         self.hw: HardwareProfile = detect_hardware()
+
+        # 核心数据：每条视频独立保存其指定的账号水印（互不覆盖！）
         self.video_list: list[Path] = []
+        self.video_watermarks: dict[Path, str] = {}
+        self.video_states: dict[Path, str] = {}
         self.tree_ids: dict[Path, str] = {}
+
         self.accounts: list[dict[str, Any]] = [
             {"name": str(a.get("name", "")).strip(), "count": int(a.get("count", 1))}
             for a in (self.cfg.watermark_accounts or [])
             if str(a.get("name", "")).strip()
         ]
+
         self.pipeline: Optional[BatchPipeline] = None
         self.worker_thread: Optional[threading.Thread] = None
         self.ui_queue: queue.Queue = queue.Queue()
         self._preview_photo: Optional[ImageTk.PhotoImage] = None
+        self._log_expanded = False
+        self._batch_total = 0
+        self._batch_done = 0
 
+        self._setup_styles()
         self._init_vars()
         self._build_ui()
         self._refresh_account_table()
+        self._update_api_badge()
         self.after(120, self._poll_ui_queue)
 
+    def _setup_styles(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        base_font = ("Microsoft YaHei UI", 9) if platform.system() == "Windows" else ("PingFang SC", 11)
+        bold_font = ("Microsoft YaHei UI", 9, "bold") if platform.system() == "Windows" else ("PingFang SC", 11, "bold")
+        title_font = ("Microsoft YaHei UI", 13, "bold") if platform.system() == "Windows" else ("PingFang SC", 14, "bold")
+
+        style.configure(".", font=base_font, background=BG_APP, foreground=TEXT_MAIN)
+        style.configure("App.TFrame", background=BG_APP)
+        style.configure("Card.TFrame", background=BG_CARD)
+        style.configure("Header.TFrame", background=BG_HEADER)
+        style.configure("HeaderTitle.TLabel", background=BG_HEADER, foreground=FG_HEADER, font=title_font)
+        style.configure("HeaderSub.TLabel", background=BG_HEADER, foreground="#94A3B8", font=base_font)
+        style.configure("HeaderGreen.TLabel", background=BG_HEADER, foreground="#4ADE80", font=bold_font)
+
+        style.configure("Card.TLabel", background=BG_CARD, foreground=TEXT_MAIN)
+        style.configure("CardBold.TLabel", background=BG_CARD, foreground=TEXT_MAIN, font=bold_font)
+        style.configure("CardMuted.TLabel", background=BG_CARD, foreground=TEXT_MUTED)
+        style.configure("Card.TCheckbutton", background=BG_CARD, foreground=TEXT_MAIN)
+        style.configure("Card.TRadiobutton", background=BG_CARD, foreground=TEXT_MAIN)
+
+        style.configure(
+            "Primary.TButton",
+            background=ACCENT_BLUE,
+            foreground="#FFFFFF",
+            font=bold_font,
+            padding=(14, 7),
+            borderwidth=0,
+        )
+        style.map("Primary.TButton", background=[("active", ACCENT_BLUE_HOVER), ("disabled", "#93C5FD")])
+
+        style.configure(
+            "Danger.TButton",
+            background=ACCENT_RED,
+            foreground="#FFFFFF",
+            font=bold_font,
+            padding=(10, 7),
+            borderwidth=0,
+        )
+        style.map("Danger.TButton", background=[("active", "#B91C1C"), ("disabled", "#FCA5A5")])
+
+        style.configure("Soft.TButton", background="#E2E8F0", foreground=TEXT_MAIN, padding=(10, 5), borderwidth=0)
+        style.map("Soft.TButton", background=[("active", "#CBD5E1")])
+
+        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", rowheight=30, borderwidth=0)
+        style.configure("Treeview.Heading", background="#F1F5F9", foreground=TEXT_MAIN, font=bold_font, relief="flat")
+        style.map("Treeview", background=[("selected", "#DBEAFE")], foreground=[("selected", TEXT_MAIN)])
+
+        style.configure("Blue.Horizontal.TProgressbar", troughcolor="#E2E8F0", background=ACCENT_BLUE, thickness=10)
+
     def _init_vars(self) -> None:
-        self.var_api_key = tk.StringVar(value=self.cfg.api_key)
-        self.var_api_url = tk.StringVar(value=self.cfg.api_base_url)
-        self.var_api_model = tk.StringVar(value=self.cfg.api_model)
-        self.var_show_key = tk.BooleanVar(value=False)
-
-        self.var_sub_source = tk.StringVar(value=_code_to_label(SUB_SOURCE_OPTIONS, self.cfg.subtitle_source))
-        self.var_output_fmt = tk.StringVar(value=self.cfg.output_format.lower())
-        self.var_speed = tk.StringVar(value=_code_to_label(SPEED_OPTIONS, self.cfg.concurrency_mode))
-        self.var_enhance = tk.StringVar(value=_code_to_label(ENHANCE_OPTIONS, self.cfg.enhance_mode))
-        self.var_quality = tk.StringVar(value=_code_to_label(QUALITY_OPTIONS, self.cfg.video_bitrate_mbps))
-        self.var_fps = tk.StringVar(value=_code_to_label(FPS_OPTIONS, self.cfg.output_fps))
         self.var_output_dir = tk.StringVar(value=self.cfg.output_dir)
-
+        self.var_output_fmt = tk.StringVar(value=self.cfg.output_format.lower())
+        self.var_enhance = tk.StringVar(value=_code_to_label(ENHANCE_OPTIONS, self.cfg.enhance_mode))
         self.var_feathered_mask = tk.BooleanVar(value=self.cfg.enable_feathered_mask)
-        self.var_dedup_on = tk.BooleanVar(value=(self.cfg.dedup_level != "off"))
-        self.var_loudnorm = tk.BooleanVar(value=self.cfg.audio_loudnorm)
-        self.var_skip_existing = tk.BooleanVar(value=self.cfg.skip_existing)
         self.var_review = tk.BooleanVar(value=self.cfg.review_subtitles)
-        self.var_keep_srt = tk.BooleanVar(value=self.cfg.keep_srt)
 
-        # 水印变量
         self.var_wm_enabled = tk.BooleanVar(value=self.cfg.watermark_enabled)
         self.var_wm_floating = tk.BooleanVar(value=self.cfg.watermark_floating)
         self.var_wm_group_dir = tk.BooleanVar(value=self.cfg.group_output_by_account)
         self.var_wm_opacity = tk.IntVar(value=self.cfg.watermark_opacity_pct)
-        self.var_wm_size = tk.IntVar(value=self.cfg.watermark_font_size)
         self.var_new_acc_name = tk.StringVar(value="")
         self.var_new_acc_count = tk.IntVar(value=3)
+        self.var_quick_assign = tk.StringVar(value=NO_WM_LABEL)
 
-        # 字幕样式变量
-        self.var_font_name = tk.StringVar(value=self.cfg.font_name)
-        self.var_font_size = tk.IntVar(value=self.cfg.font_size)
-        self.var_font_color = tk.StringVar(value=self.cfg.font_color)
-        self.var_pos_y = tk.DoubleVar(value=self.cfg.position_y_pct)
-        self.var_max_chars = tk.IntVar(value=self.cfg.max_chars_per_line)
         self.var_safe_zone = tk.BooleanVar(value=True)
+        self.var_global_progress = tk.DoubleVar(value=0.0)
+        self.var_last_log = tk.StringVar(value="就绪：请先导入视频，选择导出文件夹，然后点“开始批量剪辑”。")
+
+    def _make_card(self, parent: tk.Widget, title: str, pad: int = 12) -> ttk.Frame:
+        outer = tk.Frame(parent, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        outer.pack(fill=tk.X, pady=(0, 10))
+        if title:
+            hdr = tk.Frame(outer, bg=BG_CARD)
+            hdr.pack(fill=tk.X, padx=pad, pady=(10, 4))
+            ttk.Label(hdr, text=title, style="CardBold.TLabel").pack(side=tk.LEFT)
+            tk.Frame(outer, bg="#F1F5F9", height=1).pack(fill=tk.X, padx=pad, pady=(2, 6))
+        inner = ttk.Frame(outer, style="Card.TFrame", padding=(pad, 4, pad, pad))
+        inner.pack(fill=tk.BOTH, expand=True)
+        return inner
 
     def _build_ui(self) -> None:
-        # 1. 顶部硬件与状态条
-        top_bar = ttk.Frame(self, padding=(12, 6))
-        top_bar.pack(fill=tk.X)
-        hw_msg = (
-            f"✅ 已识别显卡：{self.hw.gpu_name}（已自动开启显卡极速加速）"
+        # 1. 顶部产品导航栏
+        header = ttk.Frame(self, style="Header.TFrame", padding=(18, 12))
+        header.pack(fill=tk.X)
+
+        left_h = ttk.Frame(header, style="Header.TFrame")
+        left_h.pack(side=tk.LEFT)
+        ttk.Label(left_h, text=f"AutoClip 智剪 Pro  v{__version__}", style="HeaderTitle.TLabel").pack(side=tk.LEFT)
+        gpu_txt = (
+            f"   🟢 {self.hw.gpu_name} 显卡加速已就绪"
             if self.hw.gpu_name
-            else f"当前模式：CPU 运行（{self.hw.cpu_cores} 核）"
+            else f"   ⚪ CPU 模式（{self.hw.cpu_cores} 核）"
         )
-        ttk.Label(top_bar, text=hw_msg, foreground="#155724", font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT)
-        ttk.Label(
-            top_bar,
-            text="使用步骤：① 填好密钥 → ② 左边导入视频 → ③ 右边填账号水印分配 → ④ 点开始一键剪辑",
-            foreground="#555555",
-        ).pack(side=tk.RIGHT)
+        ttk.Label(left_h, text=gpu_txt, style="HeaderGreen.TLabel").pack(side=tk.LEFT, padx=(10, 0))
 
-        # 2. 翻译密钥区（简洁明了）
-        api_frame = ttk.LabelFrame(self, text="第 1 步：填写 DeepSeek 翻译密钥（填一次自动记住）", padding=(10, 8))
-        api_frame.pack(fill=tk.X, padx=12, pady=(2, 8))
-
-        ttk.Label(api_frame, text="DeepSeek 密钥:").grid(row=0, column=0, sticky=tk.W, padx=(0, 6))
-        self.entry_key = ttk.Entry(api_frame, textvariable=self.var_api_key, width=42, show="*")
-        self.entry_key.grid(row=0, column=1, sticky=tk.EW, padx=(0, 6))
-        ttk.Checkbutton(api_frame, text="显示", variable=self.var_show_key, command=self._toggle_key).grid(
-            row=0, column=2, padx=(0, 10)
+        right_h = ttk.Frame(header, style="Header.TFrame")
+        right_h.pack(side=tk.RIGHT)
+        self.btn_api = tk.Button(
+            right_h,
+            text="🔑 翻译密钥",
+            bg="#334155",
+            fg="#FFFFFF",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            command=lambda: ApiKeyDialog(self),
         )
-        ttk.Button(api_frame, text="测试是否可用", command=self._on_test_api).grid(row=0, column=3, padx=4)
-        ttk.Button(api_frame, text="保存全部设置", command=self._on_save_config).grid(row=0, column=4, padx=4)
-        api_frame.columnconfigure(1, weight=1)
+        self.btn_api.pack(side=tk.LEFT, padx=(0, 8))
+        tk.Button(
+            right_h,
+            text="⚙ 高级设置",
+            bg="#334155",
+            fg="#FFFFFF",
+            activebackground="#475569",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            command=lambda: AdvancedSettingsDialog(self),
+        ).pack(side=tk.LEFT)
 
-        # 3. 主区域左右分栏
-        main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        main_pane.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        # 2. 主内容区（左右分栏）
+        content = ttk.Frame(self, style="App.TFrame", padding=12)
+        content.pack(fill=tk.BOTH, expand=True)
 
-        # ---------- 左侧：视频列表 + 开始按钮 + 简要进度日志 ----------
-        left_frame = ttk.Frame(main_pane)
-        main_pane.add(left_frame, weight=3)
+        left_col = ttk.Frame(content, style="App.TFrame")
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
-        toolbar = ttk.Frame(left_frame)
-        toolbar.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(toolbar, text="＋ 导入视频（可一次选多个）", command=self._on_add_files).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="📁 导入整个文件夹", command=self._on_add_folder).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="删除选中", command=self._on_remove_selected).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="清空列表", command=self._on_clear_list).pack(side=tk.LEFT, padx=(0, 6))
-        self.lbl_count = ttk.Label(toolbar, text="已导入：0 条视频", font=("Microsoft YaHei", 9, "bold"))
+        right_col = ttk.Frame(content, style="App.TFrame", width=410)
+        right_col.pack(side=tk.RIGHT, fill=tk.Y)
+        right_col.pack_propagate(False)
+
+        # ========== 左侧：素材列表 + 手动指定水印 + 导出位置 + 启动控制 ==========
+        list_card_outer = tk.Frame(left_col, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        list_card_outer.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        list_card = ttk.Frame(list_card_outer, style="Card.TFrame", padding=12)
+        list_card.pack(fill=tk.BOTH, expand=True)
+
+        # 顶部导入工具栏
+        tb1 = ttk.Frame(list_card, style="Card.TFrame")
+        tb1.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(tb1, text="＋ 添加视频", style="Primary.TButton", command=self._on_add_files).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(tb1, text="📁 导入文件夹", style="Soft.TButton", command=self._on_add_folder).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(tb1, text="移除选中", style="Soft.TButton", command=self._on_remove_selected).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(tb1, text="清空", style="Soft.TButton", command=self._on_clear_list).pack(side=tk.LEFT)
+        self.lbl_count = ttk.Label(tb1, text="已导入 0 条视频", style="CardBold.TLabel", foreground=ACCENT_BLUE)
         self.lbl_count.pack(side=tk.RIGHT)
 
-        tree_wrap = ttk.Frame(left_frame)
+        # 手动指定水印快捷栏（选中任意视频即可单独指定水印！）
+        tb2 = tk.Frame(list_card, bg="#F8FAFC", highlightbackground="#E2E8F0", highlightthickness=1, padx=8, pady=6)
+        tb2.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(tb2, text="给选中视频指定水印：", bg="#F8FAFC", fg=TEXT_MAIN).pack(side=tk.LEFT)
+        self.cb_quick_assign = ttk.Combobox(tb2, textvariable=self.var_quick_assign, values=[NO_WM_LABEL], width=18)
+        self.cb_quick_assign.pack(side=tk.LEFT, padx=(4, 6))
+        ttk.Button(tb2, text="应用到选中视频", style="Soft.TButton", command=self._on_assign_selected_wm).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(tb2, text="💡 也可按住 Ctrl 多选，或直接双击某一行单独修改水印", bg="#F8FAFC", fg=TEXT_MUTED).pack(side=tk.LEFT)
+
+        # 素材任务表格
+        tree_wrap = ttk.Frame(list_card, style="Card.TFrame")
         tree_wrap.pack(fill=tk.BOTH, expand=True)
-        cols = ("name", "account", "state", "progress", "detail")
-        self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", height=13)
+        cols = ("idx", "name", "account", "state", "progress", "detail")
+        self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", selectmode="extended")
+        self.tree.heading("idx", text="#")
         self.tree.heading("name", text="视频文件名")
-        self.tree.heading("account", text="分配水印账号")
-        self.tree.heading("state", text="当前状态")
+        self.tree.heading("account", text="指定水印账号")
+        self.tree.heading("state", text="状态")
         self.tree.heading("progress", text="进度")
-        self.tree.heading("detail", text="说明 / 成品名称")
-        self.tree.column("name", width=185, anchor=tk.W)
-        self.tree.column("account", width=110, anchor=tk.CENTER)
-        self.tree.column("state", width=80, anchor=tk.CENTER)
+        self.tree.heading("detail", text="耗时 / 导出结果")
+        self.tree.column("idx", width=36, anchor=tk.CENTER)
+        self.tree.column("name", width=210, anchor=tk.W)
+        self.tree.column("account", width=120, anchor=tk.CENTER)
+        self.tree.column("state", width=78, anchor=tk.CENTER)
         self.tree.column("progress", width=58, anchor=tk.CENTER)
         self.tree.column("detail", width=210, anchor=tk.W)
+
+        self.tree.tag_configure("done", foreground=ACCENT_GREEN)
+        self.tree.tag_configure("running", foreground=ACCENT_BLUE)
+        self.tree.tag_configure("failed", foreground=ACCENT_RED)
+        self.tree.tag_configure("skipped", foreground=TEXT_MUTED)
+
         t_scroll = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=t_scroll.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         t_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        action_bar = ttk.Frame(left_frame, padding=(0, 8))
-        action_bar.pack(fill=tk.X)
-        self.btn_start = ttk.Button(action_bar, text="▶ 开始一键批量剪辑", command=self._on_start_batch)
-        self.btn_start.pack(side=tk.LEFT, padx=(0, 10))
-        self.btn_stop = ttk.Button(action_bar, text="■ 停止", command=self._on_stop_batch, state=tk.DISABLED)
-        self.btn_stop.pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(action_bar, text="📂 打开成品文件夹", command=self._on_open_output_dir).pack(side=tk.LEFT)
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
+        self.tree.bind("<Button-3>", self._on_tree_right_click)
+        self.tree.bind("<<TreeviewSelect>>", lambda *_: None)
 
-        log_frame = ttk.LabelFrame(left_frame, text="实时进度记录", padding=4)
-        log_frame.pack(fill=tk.BOTH, expand=False)
-        self.log_text = tk.Text(log_frame, height=8, font=("Microsoft YaHei", 9), state=tk.DISABLED)
-        l_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=l_scroll.set)
+        # 底部导出目录 + 总进度 + 主操作卡片
+        foot_card = self._make_card(left_col, "", pad=12)
+
+        # 导出位置（永远放在最显眼位置，一键指定！）
+        out_row = ttk.Frame(foot_card, style="Card.TFrame")
+        out_row.pack(fill=tk.X, pady=(2, 10))
+        ttk.Label(out_row, text="导出文件夹：", style="CardBold.TLabel").pack(side=tk.LEFT)
+        self.entry_out = ttk.Entry(out_row, textvariable=self.var_output_dir)
+        self.entry_out.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 6))
+        ttk.Button(out_row, text="选择导出文件夹", style="Soft.TButton", command=self._on_choose_output_dir).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(out_row, text="📂 打开目录", style="Soft.TButton", command=self._on_open_output_dir).pack(side=tk.LEFT)
+
+        # 全局总进度条
+        prog_row = ttk.Frame(foot_card, style="Card.TFrame")
+        prog_row.pack(fill=tk.X, pady=(0, 10))
+        self.lbl_total_prog = ttk.Label(prog_row, text="总进度：0 / 0 条", style="Card.TLabel")
+        self.lbl_total_prog.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Progressbar(
+            prog_row,
+            variable=self.var_global_progress,
+            maximum=100.0,
+            style="Blue.Horizontal.TProgressbar",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 主启动栏
+        act_row = ttk.Frame(foot_card, style="Card.TFrame")
+        act_row.pack(fill=tk.X)
+        self.btn_start = ttk.Button(act_row, text="▶ 开始一键批量剪辑", style="Primary.TButton", command=self._on_start_batch)
+        self.btn_start.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_retry = ttk.Button(act_row, text="↻ 仅重剪失败项", style="Soft.TButton", command=self._on_retry_failed)
+        self.btn_retry.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_stop = ttk.Button(act_row, text="■ 停止", style="Danger.TButton", command=self._on_stop_batch, state=tk.DISABLED)
+        self.btn_stop.pack(side=tk.LEFT)
+
+        self.btn_toggle_log = ttk.Button(act_row, text="展开详细日志 ▾", style="Soft.TButton", command=self._toggle_log)
+        self.btn_toggle_log.pack(side=tk.RIGHT)
+
+        # 单行简洁状态 + 可折叠详细日志
+        ttk.Label(foot_card, textvariable=self.var_last_log, style="CardMuted.TLabel").pack(anchor=tk.W, pady=(8, 0))
+        self.log_wrap = ttk.Frame(foot_card, style="Card.TFrame")
+        self.log_text = tk.Text(self.log_wrap, height=7, font=("Microsoft YaHei UI", 8), bg="#F8FAFC", relief="flat", state=tk.DISABLED)
+        ls = ttk.Scrollbar(self.log_wrap, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=ls.set)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        l_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        ls.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # ---------- 右侧：3 个超清晰的中文标签页 ----------
-        right_frame = ttk.Frame(main_pane, padding=(8, 0, 0, 0))
-        main_pane.add(right_frame, weight=2)
+        # ========== 右侧：账号水印池 + 常用开关 + 实时预览 ==========
+        # 卡片 1：多账号飘动水印池
+        wm_card = self._make_card(right_col, "① 账号水印池（与字幕同字体 · 半透明白字）", pad=10)
 
-        nb = ttk.Notebook(right_frame)
-        nb.pack(fill=tk.BOTH, expand=True)
+        add_r = ttk.Frame(wm_card, style="Card.TFrame")
+        add_r.pack(fill=tk.X, pady=(0, 6))
+        ttk.Entry(add_r, textvariable=self.var_new_acc_name, width=15).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        ttk.Spinbox(add_r, from_=1, to=200, textvariable=self.var_new_acc_count, width=5).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(add_r, text="条", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(add_r, text="＋ 添加", style="Soft.TButton", command=self._on_add_account).pack(side=tk.LEFT)
 
-        tab_wm = ttk.Frame(nb, padding=10)
-        tab_basic = ttk.Frame(nb, padding=10)
-        tab_sub = ttk.Frame(nb, padding=10)
-        nb.add(tab_wm, text="① 账号与飘动水印")
-        nb.add(tab_basic, text="② 常用剪辑设置")
-        nb.add(tab_sub, text="③ 字幕样式与预览")
+        acc_wrap = ttk.Frame(wm_card, style="Card.TFrame")
+        acc_wrap.pack(fill=tk.X, pady=(0, 6))
+        self.acc_tree = ttk.Treeview(acc_wrap, columns=("acc", "cnt"), show="headings", height=4)
+        self.acc_tree.heading("acc", text="账号名（水印文字）")
+        self.acc_tree.heading("cnt", text="配额")
+        self.acc_tree.column("acc", width=240, anchor=tk.W)
+        self.acc_tree.column("cnt", width=65, anchor=tk.CENTER)
+        a_sc = ttk.Scrollbar(acc_wrap, orient=tk.VERTICAL, command=self.acc_tree.yview)
+        self.acc_tree.configure(yscrollcommand=a_sc.set)
+        self.acc_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        a_sc.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # === Tab 1: 多账号与飘动水印（最常用） ===
-        ttk.Checkbutton(
-            tab_wm,
-            text="开启半透明白色账号水印（与字幕同字体）",
-            variable=self.var_wm_enabled,
-            command=self._sync_video_account_column,
-        ).pack(anchor=tk.W, pady=(0, 4))
-        ttk.Checkbutton(
-            tab_wm,
-            text="水印在画面里全屏柔和飘动（不挡字幕，强防搬运）",
-            variable=self.var_wm_floating,
-        ).pack(anchor=tk.W, pady=(0, 4))
-        ttk.Checkbutton(
-            tab_wm,
-            text="导出时按账号自动分文件夹保存（方便发给不同号）",
-            variable=self.var_wm_group_dir,
-        ).pack(anchor=tk.W, pady=(0, 8))
+        acc_act = ttk.Frame(wm_card, style="Card.TFrame")
+        acc_act.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(acc_act, text="按数量一键分配到左侧", style="Primary.TButton", command=self._on_auto_distribute_accounts).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(acc_act, text="删除账号", style="Soft.TButton", command=self._on_del_account).pack(side=tk.LEFT)
 
-        add_box = ttk.LabelFrame(tab_wm, text="添加账号并分配视频条数（例如：A账号 3条、B账号 6条）", padding=8)
-        add_box.pack(fill=tk.X, pady=(0, 8))
+        ttk.Checkbutton(wm_card, text="开启账号水印（勾选生效）", variable=self.var_wm_enabled, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=1)
+        ttk.Checkbutton(wm_card, text="全屏柔和飘动（不挡字幕，强防搬运）", variable=self.var_wm_floating, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=1)
+        ttk.Checkbutton(wm_card, text="导出时按账号自动建子文件夹", variable=self.var_wm_group_dir, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=1)
 
-        ttk.Label(add_box, text="账号名(水印):").grid(row=0, column=0, sticky=tk.W, padx=(0, 4))
-        ttk.Entry(add_box, textvariable=self.var_new_acc_name, width=18).grid(row=0, column=1, sticky=tk.EW, padx=(0, 8))
-        ttk.Label(add_box, text="分配条数:").grid(row=0, column=2, sticky=tk.W, padx=(0, 4))
-        ttk.Spinbox(add_box, from_=1, to=200, textvariable=self.var_new_acc_count, width=6).grid(row=0, column=3, padx=(0, 8))
-        ttk.Button(add_box, text="＋ 添加", command=self._on_add_account).grid(row=0, column=4)
-        add_box.columnconfigure(1, weight=1)
+        op_row = ttk.Frame(wm_card, style="Card.TFrame")
+        op_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(op_row, text="水印透明度:", style="Card.TLabel").pack(side=tk.LEFT)
+        ttk.Scale(op_row, from_=20, to=80, variable=self.var_wm_opacity, orient=tk.HORIZONTAL, command=lambda *_: self._auto_save()).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        self.lbl_op = ttk.Label(op_row, text=f"{self.var_wm_opacity.get()}%", width=4, style="Card.TLabel")
+        self.lbl_op.pack(side=tk.LEFT)
+        self.var_wm_opacity.trace_add("write", lambda *_: self.lbl_op.config(text=f"{int(self.var_wm_opacity.get())}%"))
 
-        acc_list_wrap = ttk.Frame(tab_wm)
-        acc_list_wrap.pack(fill=tk.BOTH, expand=True)
-        self.acc_tree = ttk.Treeview(acc_list_wrap, columns=("acc", "cnt"), show="headings", height=6)
-        self.acc_tree.heading("acc", text="账号名称（显示在画面里的水印）")
-        self.acc_tree.heading("cnt", text="分配条数")
-        self.acc_tree.column("acc", width=230, anchor=tk.W)
-        self.acc_tree.column("cnt", width=80, anchor=tk.CENTER)
-        a_scroll = ttk.Scrollbar(acc_list_wrap, orient=tk.VERTICAL, command=self.acc_tree.yview)
-        self.acc_tree.configure(yscrollcommand=a_scroll.set)
-        self.acc_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        a_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        # 卡片 2：常用一键开关
+        quick_card = self._make_card(right_col, "② 常用一键设置", pad=10)
+        f_row = ttk.Frame(quick_card, style="Card.TFrame")
+        f_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(f_row, text="导出格式:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Radiobutton(f_row, text="MP4（推荐）", variable=self.var_output_fmt, value="mp4", style="Card.TRadiobutton", command=self._auto_save).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Radiobutton(f_row, text="MOV", variable=self.var_output_fmt, value="mov", style="Card.TRadiobutton", command=self._auto_save).pack(side=tk.LEFT)
 
-        acc_btn_bar = ttk.Frame(tab_wm, padding=(0, 6))
-        acc_btn_bar.pack(fill=tk.X)
-        ttk.Button(acc_btn_bar, text="删除选中账号", command=self._on_del_account).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(acc_btn_bar, text="清空账号", command=self._on_clear_accounts).pack(side=tk.LEFT)
-        self.lbl_acc_summary = ttk.Label(acc_btn_bar, text="已分配：0 条", foreground="#0d6efd")
-        self.lbl_acc_summary.pack(side=tk.RIGHT)
+        e_row = ttk.Frame(quick_card, style="Card.TFrame")
+        e_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(e_row, text="画质增强:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        cb_e = ttk.Combobox(e_row, textvariable=self.var_enhance, values=[x[0] for x in ENHANCE_OPTIONS], state="readonly", width=22)
+        cb_e.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        cb_e.bind("<<ComboboxSelected>>", lambda *_: self._auto_save())
 
-        wm_style_box = ttk.Frame(tab_wm, padding=(0, 4))
-        wm_style_box.pack(fill=tk.X)
-        ttk.Label(wm_style_box, text="水印透明度:").grid(row=0, column=0, sticky=tk.W, pady=3)
-        ttk.Scale(wm_style_box, from_=20, to=80, variable=self.var_wm_opacity, orient=tk.HORIZONTAL).grid(
-            row=0, column=1, sticky=tk.EW, padx=6
-        )
-        self.lbl_wm_op = ttk.Label(wm_style_box, text=f"{self.var_wm_opacity.get()}%", width=5)
-        self.lbl_wm_op.grid(row=0, column=2)
-        self.var_wm_opacity.trace_add("write", lambda *_: self.lbl_wm_op.config(text=f"{int(self.var_wm_opacity.get())}%"))
+        ttk.Checkbutton(quick_card, text="无痕羽化蒙版去重（顶部柔化，看不出切缝）", variable=self.var_feathered_mask, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
+        ttk.Checkbutton(quick_card, text="导出前弹窗校对中文字幕（半自动微调）", variable=self.var_review, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
 
-        ttk.Label(wm_style_box, text="水印大小:").grid(row=1, column=0, sticky=tk.W, pady=3)
-        ttk.Spinbox(wm_style_box, from_=24, to=72, textvariable=self.var_wm_size, width=8).grid(row=1, column=1, sticky=tk.W, padx=6)
-        wm_style_box.columnconfigure(1, weight=1)
-
-        # === Tab 2: 常用剪辑设置（全中文大白话） ===
-        r = 0
-        ttk.Label(tab_basic, text="导出格式:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        fmt_row = ttk.Frame(tab_basic)
-        fmt_row.grid(row=r, column=1, sticky=tk.W, pady=6)
-        ttk.Radiobutton(fmt_row, text="MP4（推荐，平台通用）", variable=self.var_output_fmt, value="mp4").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Radiobutton(fmt_row, text="MOV", variable=self.var_output_fmt, value="mov").pack(side=tk.LEFT)
-
-        r += 1
-        ttk.Label(tab_basic, text="字幕识别方式:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        ttk.Combobox(
-            tab_basic,
-            textvariable=self.var_sub_source,
-            values=[x[0] for x in SUB_SOURCE_OPTIONS],
-            state="readonly",
-            width=32,
-        ).grid(row=r, column=1, sticky=tk.EW, pady=6)
-
-        r += 1
-        ttk.Label(tab_basic, text="画质超清增强:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        ttk.Combobox(
-            tab_basic,
-            textvariable=self.var_enhance,
-            values=[x[0] for x in ENHANCE_OPTIONS],
-            state="readonly",
-            width=32,
-        ).grid(row=r, column=1, sticky=tk.EW, pady=6)
-
-        r += 1
-        ttk.Label(tab_basic, text="视频清晰度:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        ttk.Combobox(
-            tab_basic,
-            textvariable=self.var_quality,
-            values=[x[0] for x in QUALITY_OPTIONS],
-            state="readonly",
-            width=32,
-        ).grid(row=r, column=1, sticky=tk.EW, pady=6)
-
-        r += 1
-        ttk.Label(tab_basic, text="导出帧率:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        ttk.Combobox(
-            tab_basic,
-            textvariable=self.var_fps,
-            values=[x[0] for x in FPS_OPTIONS],
-            state="readonly",
-            width=32,
-        ).grid(row=r, column=1, sticky=tk.EW, pady=6)
-
-        r += 1
-        ttk.Label(tab_basic, text="批量剪辑速度:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        ttk.Combobox(
-            tab_basic,
-            textvariable=self.var_speed,
-            values=[x[0] for x in SPEED_OPTIONS],
-            state="readonly",
-            width=32,
-        ).grid(row=r, column=1, sticky=tk.EW, pady=6)
-
-        r += 1
-        ttk.Label(tab_basic, text="成品保存位置:").grid(row=r, column=0, sticky=tk.W, pady=6)
-        out_row = ttk.Frame(tab_basic)
-        out_row.grid(row=r, column=1, sticky=tk.EW, pady=6)
-        ttk.Entry(out_row, textvariable=self.var_output_dir).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(out_row, text="选择", width=6, command=self._on_choose_output_dir).pack(side=tk.LEFT, padx=(4, 0))
-
-        r += 1
-        ttk.Checkbutton(
-            tab_basic, text="开启无痕羽化蒙版去重（顶部 22% 超宽柔化，看不出切缝）", variable=self.var_feathered_mask
-        ).grid(row=r, column=0, columnspan=2, sticky=tk.W, pady=4)
-        r += 1
-        ttk.Checkbutton(
-            tab_basic, text="开启隐形防搬运去重（微缩放 + 微调色 + 清除原属性）", variable=self.var_dedup_on
-        ).grid(row=r, column=0, columnspan=2, sticky=tk.W, pady=4)
-        r += 1
-        ttk.Checkbutton(
-            tab_basic, text="音量自动放大均衡（声音洪亮不刺耳，适合中老年人）", variable=self.var_loudnorm
-        ).grid(row=r, column=0, columnspan=2, sticky=tk.W, pady=4)
-        r += 1
-        ttk.Checkbutton(
-            tab_basic, text="已经剪过的视频自动跳过（断点续剪，不重复花钱）", variable=self.var_skip_existing
-        ).grid(row=r, column=0, columnspan=2, sticky=tk.W, pady=4)
-        r += 1
-        ttk.Checkbutton(
-            tab_basic, text="导出前暂停弹窗，让我手动检查修改字幕", variable=self.var_review
-        ).grid(row=r, column=0, columnspan=2, sticky=tk.W, pady=4)
-        r += 1
-        ttk.Checkbutton(
-            tab_basic, text="顺便保存一份 SRT 字幕文件", variable=self.var_keep_srt
-        ).grid(row=r, column=0, columnspan=2, sticky=tk.W, pady=4)
-        tab_basic.columnconfigure(1, weight=1)
-
-        # === Tab 3: 字幕样式与实时效果预览 ===
-        style_grid = ttk.Frame(tab_sub)
-        style_grid.pack(fill=tk.X)
-
-        ttk.Label(style_grid, text="字体:").grid(row=0, column=0, sticky=tk.W, pady=4)
-        ttk.Entry(style_grid, textvariable=self.var_font_name, width=16).grid(row=0, column=1, sticky=tk.W, pady=4)
-        ttk.Label(style_grid, text="字号:").grid(row=0, column=2, sticky=tk.W, padx=(10, 4))
-        ttk.Spinbox(style_grid, from_=40, to=120, textvariable=self.var_font_size, width=6).grid(row=0, column=3, sticky=tk.W)
-
-        ttk.Label(style_grid, text="颜色:").grid(row=1, column=0, sticky=tk.W, pady=4)
-        c_row = ttk.Frame(style_grid)
-        c_row.grid(row=1, column=1, sticky=tk.W, pady=4)
-        ttk.Entry(c_row, textvariable=self.var_font_color, width=9).pack(side=tk.LEFT)
-        ttk.Button(c_row, text="选色", width=5, command=self._on_pick_color).pack(side=tk.LEFT, padx=3)
-
-        ttk.Label(style_grid, text="每行最多字数:").grid(row=1, column=2, sticky=tk.W, padx=(10, 4))
-        ttk.Spinbox(style_grid, from_=8, to=20, textvariable=self.var_max_chars, width=6).grid(row=1, column=3, sticky=tk.W)
-
-        ttk.Label(style_grid, text="上下位置:").grid(row=2, column=0, sticky=tk.W, pady=4)
-        pos_row = ttk.Frame(style_grid)
-        pos_row.grid(row=2, column=1, columnspan=3, sticky=tk.EW, pady=4)
-        ttk.Scale(pos_row, from_=60.0, to=92.0, variable=self.var_pos_y, orient=tk.HORIZONTAL).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.lbl_pos_y = ttk.Label(pos_row, text=f"{self.var_pos_y.get():.1f}%", width=6)
-        self.lbl_pos_y.pack(side=tk.LEFT, padx=4)
-        self.var_pos_y.trace_add("write", lambda *_: self.lbl_pos_y.config(text=f"{self.var_pos_y.get():.1f}%"))
-
-        prev_ctrl = ttk.Frame(tab_sub, padding=(0, 6))
-        prev_ctrl.pack(fill=tk.X)
-        ttk.Button(prev_ctrl, text="🔄 刷新字幕与水印预览", command=self._on_render_preview).pack(side=tk.LEFT)
-        ttk.Checkbutton(
-            prev_ctrl, text="显示抖音/视频号防遮挡红线", variable=self.var_safe_zone, command=self._on_render_preview
-        ).pack(side=tk.LEFT, padx=8)
+        # 卡片 3：实时画面预览
+        prev_outer = tk.Frame(right_col, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        prev_outer.pack(fill=tk.BOTH, expand=True)
+        prev_hdr = ttk.Frame(prev_outer, style="Card.TFrame", padding=(10, 8, 10, 4))
+        prev_hdr.pack(fill=tk.X)
+        ttk.Label(prev_hdr, text="③ 效果实时预览", style="CardBold.TLabel").pack(side=tk.LEFT)
+        ttk.Button(prev_hdr, text="🔄 刷新预览", style="Soft.TButton", command=self._on_render_preview).pack(side=tk.RIGHT)
+        ttk.Checkbutton(prev_hdr, text="安全区红线", variable=self.var_safe_zone, style="Card.TCheckbutton", command=self._on_render_preview).pack(side=tk.RIGHT, padx=(0, 8))
 
         self.preview_label = ttk.Label(
-            tab_sub,
-            text="在左侧导入视频后，点上方“刷新字幕与水印预览”即可查看真实效果",
+            prev_outer,
+            text="选中左侧任意视频后点“刷新预览”\n查看字幕与对应账号水印效果",
             anchor=tk.CENTER,
-            background="#1e1e1e",
-            foreground="#cccccc",
+            background="#1E293B",
+            foreground="#CBD5E1",
         )
-        self.preview_label.pack(fill=tk.BOTH, expand=True)
+        self.preview_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
 
-    # ---------- 账号水印管理 ----------
+    # ---------- 状态与配置自动保存 ----------
+    def _update_api_badge(self) -> None:
+        if self.cfg.api_key.strip():
+            self.btn_api.configure(text="🔑 翻译密钥（已配置）", bg="#166534")
+        else:
+            self.btn_api.configure(text="🔑 翻译密钥（未填写）", bg="#991B1B")
+
+    def _collect_config(self) -> AppConfig:
+        self.cfg.output_dir = self.var_output_dir.get().strip()
+        self.cfg.output_format = self.var_output_fmt.get().lower()
+        self.cfg.enhance_mode = _label_to_code(ENHANCE_OPTIONS, self.var_enhance.get())
+        self.cfg.enable_feathered_mask = self.var_feathered_mask.get()
+        self.cfg.review_subtitles = self.var_review.get()
+        self.cfg.watermark_enabled = self.var_wm_enabled.get()
+        self.cfg.watermark_floating = self.var_wm_floating.get()
+        self.cfg.group_output_by_account = self.var_wm_group_dir.get()
+        self.cfg.watermark_opacity_pct = int(self.var_wm_opacity.get())
+        self.cfg.watermark_accounts = list(self.accounts)
+        return self.cfg
+
+    def _auto_save(self) -> None:
+        save_config(self._collect_config())
+
+    def _toggle_log(self) -> None:
+        self._log_expanded = not self._log_expanded
+        if self._log_expanded:
+            self.log_wrap.pack(fill=tk.BOTH, expand=False, pady=(6, 0))
+            self.btn_toggle_log.configure(text="收起详细日志 ▴")
+        else:
+            self.log_wrap.pack_forget()
+            self.btn_toggle_log.configure(text="展开详细日志 ▾")
+
+    # ---------- 账号池 & 独立指定水印 ----------
     def _refresh_account_table(self) -> None:
         for iid in self.acc_tree.get_children():
             self.acc_tree.delete(iid)
-        total_alloc = 0
+        names: list[str] = []
         for acc in self.accounts:
             self.acc_tree.insert("", tk.END, values=(acc["name"], f"{acc['count']} 条"))
-            total_alloc += int(acc["count"])
-        self.lbl_acc_summary.config(text=f"共 {len(self.accounts)} 个账号，已分配 {total_alloc} 条")
-        self._sync_video_account_column()
-
-    def _sync_video_account_column(self) -> None:
-        assigned = assign_accounts_to_videos(
-            len(self.video_list), self.accounts, enabled=self.var_wm_enabled.get()
-        )
-        for vp, acc in zip(self.video_list, assigned):
-            iid = self.tree_ids.get(vp)
-            if iid:
-                cur_vals = list(self.tree.item(iid, "values"))
-                if len(cur_vals) >= 5:
-                    cur_vals[1] = acc if acc else "（无水印）"
-                    self.tree.item(iid, values=cur_vals)
+            names.append(acc["name"])
+        self.cb_quick_assign.configure(values=[NO_WM_LABEL] + names)
+        if names and self.var_quick_assign.get() == NO_WM_LABEL:
+            self.var_quick_assign.set(names[0])
+        self._auto_save()
 
     def _on_add_account(self) -> None:
         name = self.var_new_acc_name.get().strip()
@@ -512,7 +781,6 @@ class AutoClipApp(tk.Tk):
             cnt = max(1, int(self.var_new_acc_count.get()))
         except Exception:
             cnt = 1
-        # 若已存在同名账号则更新条数
         for acc in self.accounts:
             if acc["name"] == name:
                 acc["count"] = cnt
@@ -527,93 +795,126 @@ class AutoClipApp(tk.Tk):
         sel = self.acc_tree.selection()
         if not sel:
             return
-        names_to_del = {self.acc_tree.item(i, "values")[0] for i in sel}
-        self.accounts = [a for a in self.accounts if a["name"] not in names_to_del]
+        to_del = {self.acc_tree.item(i, "values")[0] for i in sel}
+        self.accounts = [a for a in self.accounts if a["name"] not in to_del]
         self._refresh_account_table()
 
-    def _on_clear_accounts(self) -> None:
-        self.accounts.clear()
-        self._refresh_account_table()
+    def _on_auto_distribute_accounts(self) -> None:
+        if not self.video_list:
+            messagebox.showinfo("提示", "请先在左侧导入视频，再点击一键分配。")
+            return
+        if not self.accounts:
+            messagebox.showinfo("提示", "请先添加至少一个账号。")
+            return
+        assigned = assign_accounts_to_videos(len(self.video_list), self.accounts, enabled=True)
+        for vp, acc in zip(self.video_list, assigned):
+            self.video_watermarks[vp] = acc
+        self._refresh_video_rows()
+        self._append_log("已按账号配额一键分配到左侧视频列表（您仍可手动修改任意单条）。")
 
-    # ---------- 常规操作 ----------
-    def _toggle_key(self) -> None:
-        self.entry_key.configure(show="" if self.var_show_key.get() else "*")
+    def _on_assign_selected_wm(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先在左侧列表点选一条或多条视频（按住 Ctrl 可多选）。")
+            return
+        chosen = self.var_quick_assign.get().strip()
+        wm = "" if chosen == NO_WM_LABEL else chosen
+        for iid in sel:
+            vp = next((p for p, tid in self.tree_ids.items() if tid == iid), None)
+            if vp:
+                self.video_watermarks[vp] = wm
+        self._refresh_video_rows()
+        self._append_log(f"已为选中的 {len(sel)} 条视频指定水印：{wm or '不加水印'}。")
 
-    def _collect_config(self) -> AppConfig:
-        self.cfg.api_key = self.var_api_key.get().strip()
-        self.cfg.api_base_url = self.var_api_url.get().strip() or "https://api.deepseek.com"
-        self.cfg.api_model = self.var_api_model.get().strip() or "deepseek-chat"
-        self.cfg.subtitle_source = _label_to_code(SUB_SOURCE_OPTIONS, self.var_sub_source.get())
-        self.cfg.output_format = self.var_output_fmt.get().lower()
-        self.cfg.concurrency_mode = _label_to_code(SPEED_OPTIONS, self.var_speed.get())
-        self.cfg.enhance_mode = _label_to_code(ENHANCE_OPTIONS, self.var_enhance.get())
-        self.cfg.video_bitrate_mbps = int(_label_to_code(QUALITY_OPTIONS, self.var_quality.get()))
-        self.cfg.output_fps = int(_label_to_code(FPS_OPTIONS, self.var_fps.get()))
-        self.cfg.output_dir = self.var_output_dir.get().strip()
-        self.cfg.enable_feathered_mask = self.var_feathered_mask.get()
-        self.cfg.dedup_level = "standard" if self.var_dedup_on.get() else "off"
-        self.cfg.audio_loudnorm = self.var_loudnorm.get()
-        self.cfg.skip_existing = self.var_skip_existing.get()
-        self.cfg.review_subtitles = self.var_review.get()
-        self.cfg.keep_srt = self.var_keep_srt.get()
+    def _on_tree_double_click(self, _event: Any) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vp = next((p for p, tid in self.tree_ids.items() if tid == sel[0]), None)
+        if not vp:
+            return
+        dlg = AssignWatermarkDialog(
+            self,
+            f"为视频指定水印：{vp.name}",
+            [a["name"] for a in self.accounts],
+            self.video_watermarks.get(vp, ""),
+        )
+        self.wait_window(dlg)
+        if dlg.chosen is not None:
+            self.video_watermarks[vp] = dlg.chosen
+            self._refresh_video_rows()
 
-        self.cfg.watermark_enabled = self.var_wm_enabled.get()
-        self.cfg.watermark_floating = self.var_wm_floating.get()
-        self.cfg.group_output_by_account = self.var_wm_group_dir.get()
-        self.cfg.watermark_opacity_pct = int(self.var_wm_opacity.get())
-        self.cfg.watermark_font_size = int(self.var_wm_size.get())
-        self.cfg.watermark_accounts = list(self.accounts)
+    def _on_tree_right_click(self, event: Any) -> None:
+        iid = self.tree.identify_row(event.y)
+        if iid and iid not in self.tree.selection():
+            self.tree.selection_set(iid)
+        if not self.tree.selection():
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="指定水印账号...", command=self._on_tree_double_click_batch)
+        menu.add_command(label="预览此视频字幕与水印", command=self._on_render_preview)
+        menu.add_separator()
+        menu.add_command(label="移除选中视频", command=self._on_remove_selected)
+        menu.tk_popup(event.x_root, event.y_root)
 
-        self.cfg.font_name = self.var_font_name.get().strip() or self.cfg.font_name
-        self.cfg.font_size = int(self.var_font_size.get())
-        self.cfg.font_color = self.var_font_color.get().strip() or "#F4EA46"
-        self.cfg.position_y_pct = round(float(self.var_pos_y.get()), 1)
-        self.cfg.max_chars_per_line = int(self.var_max_chars.get())
-        return self.cfg
+    def _on_tree_double_click_batch(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        dlg = AssignWatermarkDialog(
+            self,
+            f"为选中的 {len(sel)} 条视频统一指定水印：",
+            [a["name"] for a in self.accounts],
+            "",
+        )
+        self.wait_window(dlg)
+        if dlg.chosen is not None:
+            for iid in sel:
+                vp = next((p for p, tid in self.tree_ids.items() if tid == iid), None)
+                if vp:
+                    self.video_watermarks[vp] = dlg.chosen
+            self._refresh_video_rows()
 
-    def _on_save_config(self) -> None:
-        cfg = self._collect_config()
-        save_config(cfg)
-        self._append_log("所有设置与账号水印分配已保存。")
-        messagebox.showinfo("保存成功", "设置已保存，下次打开自动记住！")
+    def _refresh_video_rows(self) -> None:
+        for idx, vp in enumerate(self.video_list, start=1):
+            iid = self.tree_ids.get(vp)
+            if not iid:
+                continue
+            vals = list(self.tree.item(iid, "values"))
+            wm = self.video_watermarks.get(vp, "")
+            vals[0] = str(idx)
+            vals[2] = wm if wm else NO_WM_LABEL
+            self.tree.item(iid, values=vals)
 
-    def _on_test_api(self) -> None:
-        cfg = self._collect_config()
-        save_config(cfg)
-        self._append_log("正在测试 DeepSeek 翻译密钥...")
-
-        def worker() -> None:
-            ok, msg = test_deepseek_connection(cfg)
-            self.ui_queue.put(("api_test", (ok, msg)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_pick_color(self) -> None:
-        _, hex_c = colorchooser.askcolor(initialcolor=self.var_font_color.get(), title="选择字幕颜色")
-        if hex_c:
-            self.var_font_color.set(hex_c.upper())
-
-    def _on_choose_output_dir(self) -> None:
-        d = filedialog.askdirectory(title="选择成品保存文件夹")
-        if d:
-            self.var_output_dir.set(d)
-
+    # ---------- 素材管理与导出目录 ----------
     def _add_video_paths(self, paths: list[Path]) -> None:
         added = 0
         for p in paths:
             if p.is_file() and p.suffix.lower() in VIDEO_EXTS and p not in self.tree_ids:
                 self.video_list.append(p)
-                iid = self.tree.insert("", tk.END, values=(p.name, "（无水印）", "等待中", "0%", str(p.parent)))
+                self.video_watermarks[p] = ""
+                self.video_states[p] = "等待中"
+                iid = self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(str(len(self.video_list)), p.name, NO_WM_LABEL, "等待中", "0%", "待剪辑"),
+                )
                 self.tree_ids[p] = iid
                 added += 1
-        self.lbl_count.config(text=f"已导入：{len(self.video_list)} 条视频")
-        self._sync_video_account_column()
+        self.lbl_count.config(text=f"已导入 {len(self.video_list)} 条视频")
+        # 若用户已配置账号池且新导入的视频尚无水印，自动按配额预填（后续随时可手动改任意单条）
+        if added and self.accounts and self.var_wm_enabled.get():
+            if all(not self.video_watermarks.get(v) for v in self.video_list):
+                assigned = assign_accounts_to_videos(len(self.video_list), self.accounts, enabled=True)
+                for vp, acc in zip(self.video_list, assigned):
+                    self.video_watermarks[vp] = acc
+                self._refresh_video_rows()
         if added:
-            self._append_log(f"已导入 {added} 条视频（当前列表共 {len(self.video_list)} 条）。")
+            self._append_log(f"已添加 {added} 条视频素材（当前共 {len(self.video_list)} 条）。")
 
     def _on_add_files(self) -> None:
         files = filedialog.askopenfilenames(
-            title="选择视频素材（按住 Ctrl 或 Shift 可一次多选）",
+            title="选择视频素材（按住 Ctrl 或 Shift 可多选）",
             filetypes=[("视频文件", "*.mp4 *.mov *.mkv *.avi *.m4v *.flv"), ("所有文件", "*.*")],
         )
         if files:
@@ -634,96 +935,28 @@ class AutoClipApp(tk.Tk):
             target = next((p for p, tid in self.tree_ids.items() if tid == iid), None)
             if target:
                 self.video_list.remove(target)
+                self.video_watermarks.pop(target, None)
+                self.video_states.pop(target, None)
                 del self.tree_ids[target]
             self.tree.delete(iid)
-        self.lbl_count.config(text=f"已导入：{len(self.video_list)} 条视频")
-        self._sync_video_account_column()
+        self.lbl_count.config(text=f"已导入 {len(self.video_list)} 条视频")
+        self._refresh_video_rows()
 
     def _on_clear_list(self) -> None:
         self.video_list.clear()
+        self.video_watermarks.clear()
+        self.video_states.clear()
         self.tree_ids.clear()
         for iid in self.tree.get_children():
             self.tree.delete(iid)
-        self.lbl_count.config(text="已导入：0 条视频")
+        self.lbl_count.config(text="已导入 0 条视频")
 
-    def _on_render_preview(self) -> None:
-        sel = self.tree.selection()
-        target_video: Optional[Path] = None
-        if sel:
-            target_video = next((p for p, tid in self.tree_ids.items() if tid == sel[0]), None)
-        elif self.video_list:
-            target_video = self.video_list[0]
-
-        if not target_video:
-            messagebox.showinfo("提示", "请先在左边导入至少一条视频。")
-            return
-
-        cfg = self._collect_config()
-        sample_wm = self.accounts[0]["name"] if (cfg.watermark_enabled and self.accounts) else ""
-        try:
-            img_path = render_preview_frame(target_video, cfg, watermark_text=sample_wm)
-            im = Image.open(img_path).convert("RGB")
-            if self.var_safe_zone.get():
-                draw = ImageDraw.Draw(im)
-                w, h = im.size
-                safe_y = int(h * 0.82)
-                for x in range(0, w, 24):
-                    draw.line([(x, safe_y), (min(x + 14, w), safe_y)], fill=(255, 70, 70), width=4)
-            im.thumbnail((340, 440), Image.LANCZOS)
-            self._preview_photo = ImageTk.PhotoImage(im)
-            self.preview_label.configure(image=self._preview_photo, text="")
-        except Exception as e:
-            messagebox.showerror("预览失败", f"生成预览图出错：{e}")
-
-    def _review_on_main_thread(
-        self, video_path: Path, items: list[SubtitleItem]
-    ) -> Optional[list[SubtitleItem]]:
-        done_ev = threading.Event()
-        holder: dict[str, Optional[list[SubtitleItem]]] = {"result": None}
-
-        def show_dialog() -> None:
-            dlg = SubtitleReviewDialog(self, video_path.name, items)
-            self.wait_window(dlg)
-            holder["result"] = dlg.result
-            done_ev.set()
-
-        self.ui_queue.put(("callback", show_dialog))
-        done_ev.wait()
-        return holder["result"]
-
-    def _on_start_batch(self) -> None:
-        if not self.video_list:
-            messagebox.showwarning("请先导入视频", "请先点击左上角“导入视频”添加至少一个视频。")
-            return
-        cfg = self._collect_config()
-        if not cfg.api_key:
-            messagebox.showwarning("缺少翻译密钥", "请先在顶部填入您的 DeepSeek 密钥。")
-            return
-        save_config(cfg)
-
-        self.btn_start.configure(state=tk.DISABLED)
-        self.btn_stop.configure(state=tk.NORMAL)
-
-        videos = list(self.video_list)
-        self.pipeline = BatchPipeline(
-            cfg=cfg,
-            hw=self.hw,
-            status_cb=lambda st: self.ui_queue.put(("status", st)),
-            log_cb=lambda m: self.ui_queue.put(("log", m)),
-            review_cb=self._review_on_main_thread if cfg.review_subtitles else None,
-        )
-
-        def run_worker() -> None:
-            results = self.pipeline.run_batch(videos)
-            self.ui_queue.put(("done", results))
-
-        self.worker_thread = threading.Thread(target=run_worker, daemon=True)
-        self.worker_thread.start()
-
-    def _on_stop_batch(self) -> None:
-        if self.pipeline:
-            self.pipeline.cancel()
-            self._append_log("正在停止剩余任务，请稍候...")
+    def _on_choose_output_dir(self) -> None:
+        d = filedialog.askdirectory(title="选择成品保存文件夹")
+        if d:
+            self.var_output_dir.set(d)
+            self._auto_save()
+            self._append_log(f"成品导出文件夹已设为：{d}")
 
     def _on_open_output_dir(self) -> None:
         out = self.var_output_dir.get().strip()
@@ -741,7 +974,111 @@ class AutoClipApp(tk.Tk):
         else:
             subprocess.Popen(["xdg-open", str(target)])
 
+    # ---------- 实时预览 ----------
+    def _on_render_preview(self) -> None:
+        sel = self.tree.selection()
+        target_video: Optional[Path] = None
+        if sel:
+            target_video = next((p for p, tid in self.tree_ids.items() if tid == sel[0]), None)
+        elif self.video_list:
+            target_video = self.video_list[0]
+        if not target_video:
+            messagebox.showinfo("提示", "请先在左侧导入至少一条视频。")
+            return
+
+        cfg = self._collect_config()
+        wm = self.video_watermarks.get(target_video, "") if cfg.watermark_enabled else ""
+        try:
+            img_path = render_preview_frame(target_video, cfg, watermark_text=wm)
+            im = Image.open(img_path).convert("RGB")
+            if self.var_safe_zone.get():
+                draw = ImageDraw.Draw(im)
+                w, h = im.size
+                safe_y = int(h * 0.82)
+                for x in range(0, w, 24):
+                    draw.line([(x, safe_y), (min(x + 14, w), safe_y)], fill=(255, 70, 70), width=4)
+            im.thumbnail((340, 290), Image.LANCZOS)
+            self._preview_photo = ImageTk.PhotoImage(im)
+            self.preview_label.configure(image=self._preview_photo, text="")
+        except Exception as e:
+            messagebox.showerror("预览失败", f"生成预览图出错：{e}")
+
+    # ---------- 批量执行 ----------
+    def _review_on_main_thread(
+        self, video_path: Path, items: list[SubtitleItem]
+    ) -> Optional[list[SubtitleItem]]:
+        done_ev = threading.Event()
+        holder: dict[str, Optional[list[SubtitleItem]]] = {"result": None}
+
+        def show_dialog() -> None:
+            dlg = SubtitleReviewDialog(self, video_path.name, items)
+            self.wait_window(dlg)
+            holder["result"] = dlg.result
+            done_ev.set()
+
+        self.ui_queue.put(("callback", show_dialog))
+        done_ev.wait()
+        return holder["result"]
+
+    def _start_with_pairs(self, pairs: list[tuple[Path, str]]) -> None:
+        cfg = self._collect_config()
+        if not cfg.api_key:
+            messagebox.showwarning("请先填写密钥", "请点击右上角「🔑 翻译密钥」填入您的 DeepSeek API Key。")
+            ApiKeyDialog(self)
+            return
+        save_config(cfg)
+
+        self._batch_total = len(pairs)
+        self._batch_done = 0
+        self.var_global_progress.set(0.0)
+        self.lbl_total_prog.config(text=f"总进度：0 / {self._batch_total} 条")
+
+        self.btn_start.configure(state=tk.DISABLED)
+        self.btn_retry.configure(state=tk.DISABLED)
+        self.btn_stop.configure(state=tk.NORMAL)
+
+        self.pipeline = BatchPipeline(
+            cfg=cfg,
+            hw=self.hw,
+            status_cb=lambda st: self.ui_queue.put(("status", st)),
+            log_cb=lambda m: self.ui_queue.put(("log", m)),
+            review_cb=self._review_on_main_thread if cfg.review_subtitles else None,
+        )
+
+        def run_worker() -> None:
+            results = self.pipeline.run_batch(pairs)
+            self.ui_queue.put(("done", results))
+
+        self.worker_thread = threading.Thread(target=run_worker, daemon=True)
+        self.worker_thread.start()
+
+    def _on_start_batch(self) -> None:
+        if not self.video_list:
+            messagebox.showwarning("请导入视频", "请先点左上角「＋ 添加视频」导入素材。")
+            return
+        wm_on = self.var_wm_enabled.get()
+        pairs = [(vp, self.video_watermarks.get(vp, "") if wm_on else "") for vp in self.video_list]
+        self._start_with_pairs(pairs)
+
+    def _on_retry_failed(self) -> None:
+        wm_on = self.var_wm_enabled.get()
+        failed_pairs = [
+            (vp, self.video_watermarks.get(vp, "") if wm_on else "")
+            for vp in self.video_list
+            if self.video_states.get(vp) in ("失败", "已取消")
+        ]
+        if not failed_pairs:
+            messagebox.showinfo("提示", "当前没有失败或取消的视频需要重剪。")
+            return
+        self._start_with_pairs(failed_pairs)
+
+    def _on_stop_batch(self) -> None:
+        if self.pipeline:
+            self.pipeline.cancel()
+            self._append_log("正在停止剩余任务，请稍候...")
+
     def _append_log(self, msg: str) -> None:
+        self.var_last_log.set(msg)
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, msg + "\n")
         self.log_text.see(tk.END)
@@ -755,18 +1092,32 @@ class AutoClipApp(tk.Tk):
                     self._append_log(payload)
                 elif kind == "status":
                     st: TaskStatus = payload
+                    prev_state = self.video_states.get(st.video_path, "")
+                    self.video_states[st.video_path] = st.state
                     iid = self.tree_ids.get(st.video_path)
                     if iid:
+                        idx = self.video_list.index(st.video_path) + 1 if st.video_path in self.video_list else 0
                         pct = f"{int(round(st.progress * 100))}%"
-                        acc_disp = st.account_name if st.account_name else "（无水印）"
-                        self.tree.item(iid, values=(st.video_path.name, acc_disp, st.state, pct, st.message))
-                elif kind == "api_test":
-                    ok, msg = payload
-                    self._append_log(msg)
-                    if ok:
-                        messagebox.showinfo("测试成功", msg)
-                    else:
-                        messagebox.showerror("测试失败", msg)
+                        acc_disp = st.account_name if st.account_name else NO_WM_LABEL
+                        tag = ""
+                        if st.state == "已完成":
+                            tag = "done"
+                        elif st.state == "失败":
+                            tag = "failed"
+                        elif st.state == "已跳过":
+                            tag = "skipped"
+                        elif st.state not in ("等待中", "已取消"):
+                            tag = "running"
+                        self.tree.item(
+                            iid,
+                            values=(str(idx), st.video_path.name, acc_disp, st.state, pct, st.message),
+                            tags=(tag,) if tag else (),
+                        )
+                    if prev_state not in ("已完成", "已跳过", "失败") and st.state in ("已完成", "已跳过", "失败"):
+                        self._batch_done += 1
+                        pct_all = (self._batch_done / max(1, self._batch_total)) * 100.0
+                        self.var_global_progress.set(pct_all)
+                        self.lbl_total_prog.config(text=f"总进度：{self._batch_done} / {self._batch_total} 条")
                 elif kind == "callback":
                     payload()
                 elif kind == "done":
@@ -775,8 +1126,9 @@ class AutoClipApp(tk.Tk):
                     fail_n = sum(1 for r in results if r.state == "失败")
                     self._append_log(f"=== 批量剪辑结束：成功/跳过 {ok_n} 条，失败 {fail_n} 条 ===")
                     self.btn_start.configure(state=tk.NORMAL)
+                    self.btn_retry.configure(state=tk.NORMAL)
                     self.btn_stop.configure(state=tk.DISABLED)
-                    messagebox.showinfo("全部剪辑完成", f"批量剪辑已完成！\n成功：{ok_n} 条\n失败：{fail_n} 条")
+                    messagebox.showinfo("批量剪辑完成", f"全部任务已结束！\n成功：{ok_n} 条\n失败：{fail_n} 条")
         except queue.Empty:
             pass
         self.after(120, self._poll_ui_queue)

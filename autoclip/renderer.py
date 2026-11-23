@@ -390,7 +390,7 @@ def render_video(
             )
             filter_chains.append("[1:v]format=gray[m_alpha]")
             filter_chains.append("[m_top_rgba][m_alpha]alphamerge[m_top_masked]")
-            filter_chains.append("[m_orig][m_top_masked]overlay=0:0:format=auto[v_masked]")
+            filter_chains.append("[m_orig][m_top_masked]overlay=0:0:format=yuv420[v_masked]")
             v_cur = "[v_masked]"
 
         # 4. 烧录中文字幕与飘动水印

@@ -43,14 +43,14 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Publish v2.0.2 tiny EXE hotfix (~10MB)
+      - name: Publish v3.0.0 Pro EXE hotfix (~10MB)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v2.0.2.exe" -Force
-          if (gh release view v2.0.2 2>$null) {
-            gh release upload v2.0.2 AutoClip-v2.0.2.exe --clobber
+          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v3.0.0.exe" -Force
+          if (gh release view v3.0.0 2>$null) {
+            gh release upload v3.0.0 AutoClip-v3.0.0.exe --clobber
           } else {
-            gh release create v2.0.2 AutoClip-v2.0.2.exe --title "AutoClip v2.0.2 Low-CPU GPU Render Hotfix (~10MB)" --notes "Enable CUDA NVDEC decode in render pass, remove heavy CPU hqdn3d, optimize mask to top 28pct strip, add 30fps/60fps selector. Replace AutoClip.exe directly."
+            gh release create v3.0.0 AutoClip-v3.0.0.exe --title "AutoClip Pro v3.0.0 (Product UI + Per-Video Watermark + YUV420 Mask)" --notes "Product-grade UI redesign, prominent export folder selector, manual per-video and batch watermark assignment, yuv420 zero-conversion mask optimization, global progress bar and retry-failed button. Replace AutoClip.exe directly."
           }

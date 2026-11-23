@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 from .asr import get_whisper_engine
 from .config import AppConfig, assign_accounts_to_videos
@@ -126,6 +127,7 @@ class BatchPipeline:
 
     def process_single(self, video_path: Path, account_name: str = "") -> TaskStatus:
         name = video_path.name
+        t0 = time.time()
         if self._cancel_event.is_set():
             st = TaskStatus(video_path, "已取消", 0.0, "任务已取消", account_name=account_name)
             self._emit(video_path, st.state, st.progress, st.message, account_name=account_name)
@@ -226,7 +228,15 @@ class BatchPipeline:
                     watermark_text=account_name,
                 )
 
-            st = TaskStatus(video_path, "已完成", 1.0, f"已保存：{out_path.name}", out_path, account_name)
+            elapsed = int(round(time.time() - t0))
+            st = TaskStatus(
+                video_path,
+                "已完成",
+                1.0,
+                f"耗时 {elapsed}秒 | {out_path.name}",
+                out_path,
+                account_name,
+            )
             self._emit(video_path, st.state, st.progress, st.message, st.output_path, account_name)
             return st
 
@@ -240,25 +250,30 @@ class BatchPipeline:
             self._emit(video_path, st.state, st.progress, st.message, account_name=account_name)
             return st
 
-    def run_batch(self, video_paths: list[Path]) -> list[TaskStatus]:
+    def run_batch(
+        self, video_items: Union[list[Path], list[tuple[Path, str]]]
+    ) -> list[TaskStatus]:
         total_w, render_w, trans_w = self._determine_concurrency()
         self._render_sem = threading.Semaphore(render_w)
         self._translate_sem = threading.Semaphore(trans_w)
 
-        assigned_accounts = assign_accounts_to_videos(
-            len(video_paths),
-            self.cfg.watermark_accounts,
-            enabled=self.cfg.watermark_enabled,
-        )
+        pairs: list[tuple[Path, str]] = []
+        if video_items and isinstance(video_items[0], tuple):
+            pairs = list(video_items)  # type: ignore[arg-type]
+        else:
+            vps: list[Path] = list(video_items)  # type: ignore[arg-type]
+            assigned = assign_accounts_to_videos(
+                len(vps), self.cfg.watermark_accounts, enabled=self.cfg.watermark_enabled
+            )
+            pairs = list(zip(vps, assigned))
 
         mode_desc = (
-            f"显卡并行加速（同时压制 {render_w} 路）"
+            f"显卡并行加速（总流水线 {total_w} 路，同时压制 {render_w} 路）"
             if total_w > 1
             else "单路顺序剪辑"
         )
-        self._log(f"开始批量剪辑，共 {len(video_paths)} 个视频 | 模式：{mode_desc}")
+        self._log(f"开始批量剪辑，共 {len(pairs)} 条视频 | 模式：{mode_desc}")
 
-        pairs = list(zip(video_paths, assigned_accounts))
         for vp, acc in pairs:
             self._emit(vp, "等待中", 0.0, "排队中...", account_name=acc)
 
