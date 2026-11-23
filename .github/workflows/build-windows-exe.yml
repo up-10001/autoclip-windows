@@ -20,12 +20,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies with onnxruntime-gpu for RTX 3060
+      - name: Install dependencies with onnxruntime-directml for Windows GPU
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
-          pip uninstall -y onnxruntime || true
-          pip install "onnxruntime-gpu>=1.19.0"
+          pip uninstall -y onnxruntime onnxruntime-gpu || true
+          pip install "onnxruntime-directml>=1.19.0"
 
       - name: Download Windows FFmpeg and Real-ESRGAN binaries
         shell: pwsh
@@ -43,7 +43,7 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Package v2.0.0 GPU hot-patch zip
+      - name: Package v2.0.1 DirectML GPU hot-patch zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path patch_pkg/_internal | Out-Null
@@ -57,20 +57,20 @@ jobs:
             Copy-Item $_.FullName "patch_pkg/_internal/$($_.Name)" -Recurse -Force
           }
           Get-ChildItem "dist/AutoClip/_internal" -File | Where-Object {
-            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six|libgeos|msvcp|vcruntime|onnxruntime)"
+            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six|libgeos|msvcp|vcruntime|onnxruntime|DirectML)"
           } | ForEach-Object {
             Write-Host "Packing file: $($_.Name)"
             Copy-Item $_.FullName "patch_pkg/_internal/" -Force
           }
-          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v2.0.0-GPU-patch.zip" -Force
+          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v2.0.1-DirectML-patch.zip" -Force
 
-      - name: Publish v2.0.0 GPU Release
+      - name: Publish v2.0.1 DirectML GPU Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          if (gh release view v2.0.0 2>$null) {
-            gh release upload v2.0.0 AutoClip-v2.0.0-GPU-patch.zip --clobber
+          if (gh release view v2.0.1 2>$null) {
+            gh release upload v2.0.1 AutoClip-v2.0.1-DirectML-patch.zip --clobber
           } else {
-            gh release create v2.0.0 AutoClip-v2.0.0-GPU-patch.zip --title "AutoClip v2.0.0 GPU Final Patch" --notes "RTX 3060 GPU OCR acceleration, floating multi-account watermarks, seamless 160px feathered mask, anti-flash subtitle timing, and redesigned Chinese UI."
+            gh release create v2.0.1 AutoClip-v2.0.1-DirectML-patch.zip --title "AutoClip v2.0.1 True GPU Patch (DirectML + NVDEC)" --notes "Switch OCR from CUDA to Windows native DirectML GPU (zero missing CUDA DLLs) + FFmpeg NVDEC hardware decode so RTX 3060 actually runs OCR at full speed and CPU stays low."
           }
