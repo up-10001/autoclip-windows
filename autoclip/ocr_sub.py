@@ -20,6 +20,7 @@ import numpy as np
 
 from .asr import RawSegment
 from .hardware import find_ffmpeg_binary
+from .proc_mgr import register_proc, unregister_proc
 from .renderer import probe_video
 
 _OCR_LOCK = threading.Lock()
@@ -181,6 +182,7 @@ def extract_onscreen_english_subtitles(
     log_cb: Optional[Callable[[str], None]] = None,
     progress_cb: Optional[Callable[[float], None]] = None,
     sample_fps: float = 2.5,
+    cancel_event: Optional[threading.Event] = None,
 ) -> list[RawSegment]:
     """极速扫描画面英文字幕区（DirectML GPU + NVDEC 硬件解码）。"""
     ocr, backend = _get_ocr(log_cb=log_cb)
@@ -206,17 +208,21 @@ def extract_onscreen_english_subtitles(
     total_est_frames = max(1, int(info.duration * sample_fps))
     min_white_px = max(18, int(scale_w * scale_h * 0.0006))
 
-    # 优先使用 CUDA NVDEC 硬件解码（大幅降低 CPU 占用），若失败自动回退软解
     proc = _open_ffmpeg_frame_pipe(
         ffmpeg, video_path, sample_fps, bw, bh, x0, y0, scale_w, scale_h, use_hwaccel=("GPU" in backend)
     )
+    register_proc(proc)
     assert proc.stdout is not None
     first_buf = proc.stdout.read(frame_bytes)
     if len(first_buf) < frame_bytes:
+        unregister_proc(proc)
         proc.wait()
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("用户已停止任务")
         proc = _open_ffmpeg_frame_pipe(
             ffmpeg, video_path, sample_fps, bw, bh, x0, y0, scale_w, scale_h, use_hwaccel=False
         )
+        register_proc(proc)
         assert proc.stdout is not None
         first_buf = proc.stdout.read(frame_bytes)
 
@@ -227,57 +233,75 @@ def extract_onscreen_english_subtitles(
     ocr_calls = 0
 
     buf = first_buf
-    while len(buf) == frame_bytes:
-        t = frame_idx / sample_fps
-        frame_idx += 1
+    try:
+        while len(buf) == frame_bytes:
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                raise InterruptedError("用户已停止任务")
+            t = frame_idx / sample_fps
+            frame_idx += 1
 
-        rgb = np.frombuffer(buf, dtype=np.uint8).reshape(scale_h, scale_w, 3)
-        wmask = _extract_white_subtitle_mask(rgb)
-        wcount = int(wmask.sum())
+            rgb = np.frombuffer(buf, dtype=np.uint8).reshape(scale_h, scale_w, 3)
+            wmask = _extract_white_subtitle_mask(rgb)
+            wcount = int(wmask.sum())
 
-        if wcount < min_white_px:
-            cur_text = ""
-            prev_dil_mask = None
-            prev_text = ""
-        else:
-            dil_mask = _dilate_mask(wmask)
-            reuse = False
-            if prev_dil_mask is not None and prev_text:
-                inter = np.logical_and(prev_dil_mask, dil_mask).sum()
-                union = np.logical_or(prev_dil_mask, dil_mask).sum()
-                if union > 0 and (inter / union) >= 0.58:
-                    reuse = True
-
-            if reuse:
-                cur_text = prev_text
+            if wcount < min_white_px:
+                cur_text = ""
+                prev_dil_mask = None
+                prev_text = ""
             else:
-                with _OCR_LOCK:
-                    res, _ = ocr(rgb)
-                ocr_calls += 1
-                kept_lines: list[tuple[float, str]] = []
-                if res:
-                    for item in res:
-                        box, txt, score = item[0], str(item[1]), float(item[2])
-                        if score < 0.50:
-                            continue
-                        if not _box_looks_like_subtitle(box, wmask, scale_w):
-                            continue
-                        cleaned = _clean_ocr_english(txt)
-                        if cleaned:
-                            y_center = sum(p[1] for p in box) / 4.0
-                            kept_lines.append((y_center, cleaned))
-                kept_lines.sort(key=lambda x: x[0])
-                cur_text = " ".join(x[1] for x in kept_lines).strip()
-                prev_dil_mask = dil_mask
-                prev_text = cur_text
+                dil_mask = _dilate_mask(wmask)
+                reuse = False
+                if prev_dil_mask is not None and prev_text:
+                    inter = np.logical_and(prev_dil_mask, dil_mask).sum()
+                    union = np.logical_or(prev_dil_mask, dil_mask).sum()
+                    if union > 0 and (inter / union) >= 0.58:
+                        reuse = True
 
-        frame_texts.append((t, cur_text))
-        if progress_cb and frame_idx % 5 == 0:
-            progress_cb(min(0.99, frame_idx / total_est_frames))
+                if reuse:
+                    cur_text = prev_text
+                else:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError("用户已停止任务")
+                    with _OCR_LOCK:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise InterruptedError("用户已停止任务")
+                        res, _ = ocr(rgb)
+                    ocr_calls += 1
+                    kept_lines: list[tuple[float, str]] = []
+                    if res:
+                        for item in res:
+                            box, txt, score = item[0], str(item[1]), float(item[2])
+                            if score < 0.50:
+                                continue
+                            if not _box_looks_like_subtitle(box, wmask, scale_w):
+                                continue
+                            cleaned = _clean_ocr_english(txt)
+                            if cleaned:
+                                y_center = sum(p[1] for p in box) / 4.0
+                                kept_lines.append((y_center, cleaned))
+                    kept_lines.sort(key=lambda x: x[0])
+                    cur_text = " ".join(x[1] for x in kept_lines).strip()
+                    prev_dil_mask = dil_mask
+                    prev_text = cur_text
 
-        buf = proc.stdout.read(frame_bytes)
+            frame_texts.append((t, cur_text))
+            if progress_cb and frame_idx % 5 == 0:
+                progress_cb(min(0.99, frame_idx / total_est_frames))
 
-    proc.wait()
+            buf = proc.stdout.read(frame_bytes)
+    finally:
+        unregister_proc(proc)
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     raw_groups: list[tuple[float, float, list[str]]] = []
     step_dt = 1.0 / sample_fps

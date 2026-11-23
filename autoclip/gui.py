@@ -405,6 +405,7 @@ class AutoClipApp(tk.Tk):
         self._build_ui()
         self._refresh_account_table()
         self._update_api_badge()
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self.after(120, self._poll_ui_queue)
 
     def _setup_styles(self) -> None:
@@ -942,7 +943,20 @@ class AutoClipApp(tk.Tk):
         self.lbl_count.config(text=f"已导入 {len(self.video_list)} 条视频")
         self._refresh_video_rows()
 
+    def _is_running(self) -> bool:
+        return self.worker_thread is not None and self.worker_thread.is_alive()
+
+    def _on_close_window(self) -> None:
+        if self._is_running() and self.pipeline is not None:
+            self.pipeline.cancel()
+        self.destroy()
+
     def _on_clear_list(self) -> None:
+        if self._is_running():
+            if not messagebox.askyesno("正在剪辑中", "当前仍有任务在运行，清空列表会立即强制停止所有剪辑任务，是否继续？"):
+                return
+            if self.pipeline:
+                self.pipeline.cancel()
         self.video_list.clear()
         self.video_watermarks.clear()
         self.video_states.clear()
@@ -950,6 +964,8 @@ class AutoClipApp(tk.Tk):
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self.lbl_count.config(text="已导入 0 条视频")
+        self.var_global_progress.set(0.0)
+        self.lbl_total_prog.config(text="总进度：0 / 0 条")
 
     def _on_choose_output_dir(self) -> None:
         d = filedialog.askdirectory(title="选择成品保存文件夹")
@@ -1074,8 +1090,9 @@ class AutoClipApp(tk.Tk):
 
     def _on_stop_batch(self) -> None:
         if self.pipeline:
-            self.pipeline.cancel()
-            self._append_log("正在停止剩余任务，请稍候...")
+            self.btn_stop.configure(state=tk.DISABLED)
+            self._append_log("正在立即强制停止所有正在运行的剪辑任务...")
+            threading.Thread(target=self.pipeline.cancel, daemon=True).start()
 
     def _append_log(self, msg: str) -> None:
         self.var_last_log.set(msg)

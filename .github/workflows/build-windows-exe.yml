@@ -43,14 +43,14 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Publish v3.0.0 Pro EXE hotfix (~10MB)
+      - name: Publish v3.0.1 Pro EXE hotfix (~10MB)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v3.0.0.exe" -Force
-          if (gh release view v3.0.0 2>$null) {
-            gh release upload v3.0.0 AutoClip-v3.0.0.exe --clobber
+          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v3.0.1.exe" -Force
+          if (gh release view v3.0.1 2>$null) {
+            gh release upload v3.0.1 AutoClip-v3.0.1.exe --clobber
           } else {
-            gh release create v3.0.0 AutoClip-v3.0.0.exe --title "AutoClip Pro v3.0.0 (Product UI + Per-Video Watermark + YUV420 Mask)" --notes "Product-grade UI redesign, prominent export folder selector, manual per-video and batch watermark assignment, yuv420 zero-conversion mask optimization, global progress bar and retry-failed button. Replace AutoClip.exe directly."
+            gh release create v3.0.1 AutoClip-v3.0.1.exe --title "AutoClip Pro v3.0.1 Hotfix (Instant Stop + Kill Background FFmpeg)" --notes "Clicking Stop, Clear, or closing window now immediately kills all running FFmpeg processes and cleans up partial outputs with zero background residue."
           }

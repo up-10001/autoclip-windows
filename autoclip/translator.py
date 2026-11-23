@@ -362,6 +362,7 @@ def translate_segments(
     log_cb: Optional[Callable[[str], None]] = None,
     progress_cb: Optional[Callable[[float], None]] = None,
     strict_visual_sync: bool = False,
+    cancel_event=None,
 ) -> list[SubtitleItem]:
     """分批调用 DeepSeek API 翻译（ID 锁定时间轴，绝不漂移、绝不漏句）。"""
     if not raw_segments:
@@ -374,6 +375,8 @@ def translate_segments(
     all_subs: list[SubtitleItem] = []
 
     for b_idx in range(total_batches):
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("用户已停止任务")
         start_i = b_idx * batch_size
         batch = raw_segments[start_i : start_i + batch_size]
         if log_cb:

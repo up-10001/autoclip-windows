@@ -17,6 +17,7 @@ from PIL import Image
 
 from .config import AppConfig, get_app_dir, get_resource_dir
 from .hardware import HardwareProfile, find_ffmpeg_binary
+from .proc_mgr import register_proc, unregister_proc
 from .subtitle import write_ass_subtitle
 from .translator import SubtitleItem
 
@@ -300,6 +301,7 @@ def render_video(
     log_cb: Optional[Callable[[str], None]] = None,
     progress_cb: Optional[Callable[[float], None]] = None,
     watermark_text: str = "",
+    cancel_event=None,
 ) -> Path:
     """执行无痕羽化蒙版去重、字幕与飘动水印烧录、音频均衡与视频压制。"""
     ffmpeg = find_ffmpeg_binary("ffmpeg")
@@ -467,20 +469,39 @@ def render_video(
             errors="replace",
             creationflags=creationflags,
         )
+        register_proc(proc)
 
         time_re = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
         stderr_tail: list[str] = []
         assert proc.stderr is not None
-        for line in proc.stderr:
-            stderr_tail.append(line.strip())
-            if len(stderr_tail) > 25:
-                stderr_tail.pop(0)
-            m = time_re.search(line)
-            if m and info.duration > 0 and progress_cb:
-                cur_t = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-                progress_cb(min(0.99, cur_t / info.duration))
+        try:
+            for line in proc.stderr:
+                if cancel_event is not None and cancel_event.is_set():
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
+                stderr_tail.append(line.strip())
+                if len(stderr_tail) > 25:
+                    stderr_tail.pop(0)
+                m = time_re.search(line)
+                if m and info.duration > 0 and progress_cb:
+                    cur_t = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                    progress_cb(min(0.99, cur_t / info.duration))
+            ret = proc.wait()
+        finally:
+            unregister_proc(proc)
 
-        ret = proc.wait()
+        if cancel_event is not None and cancel_event.is_set():
+            # 清理被中途停止的残缺成片，避免留下损坏文件
+            try:
+                if output_path.is_file():
+                    output_path.unlink()
+            except Exception:
+                pass
+            raise InterruptedError("用户已停止任务")
+
         if ret != 0:
             # 若 NVENC 异常（例如驱动过旧或超出会话上限），自动回退 libx264 重试一次
             if encoder == "h264_nvenc":
@@ -496,6 +517,7 @@ def render_video(
                     log_cb=log_cb,
                     progress_cb=progress_cb,
                     watermark_text=watermark_text,
+                    cancel_event=cancel_event,
                 )
             raise RuntimeError("FFmpeg 渲染失败：\n" + "\n".join(stderr_tail[-10:]))
 

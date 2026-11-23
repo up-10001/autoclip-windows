@@ -14,6 +14,7 @@ from .asr import get_whisper_engine
 from .config import AppConfig, assign_accounts_to_videos
 from .hardware import HardwareProfile
 from .ocr_sub import extract_onscreen_english_subtitles
+from .proc_mgr import kill_all_active_procs
 from .renderer import render_video
 from .subtitle import write_srt_subtitle
 from .translator import SubtitleItem, translate_segments
@@ -82,6 +83,9 @@ class BatchPipeline:
 
     def cancel(self) -> None:
         self._cancel_event.set()
+        killed = kill_all_active_procs()
+        if killed:
+            self._log(f"已强制终止 {killed} 个正在后台运行的剪辑进程。")
 
     def _emit(
         self,
@@ -153,12 +157,15 @@ class BatchPipeline:
                         progress_cb=lambda p: self._emit(
                             video_path, "识别字幕", 0.02 + p * 0.33, "正在对齐画面英文字幕...", account_name=account_name
                         ),
+                        cancel_event=self._cancel_event,
                     )
                     if len(raw_segments) >= 3:
                         used_ocr = True
                     else:
                         self._log(f"[{name}] 画面未检测到足够英文字幕，自动切换至语音识别...")
                         raw_segments = []
+                except InterruptedError:
+                    raise
                 except Exception as ocr_err:
                     self._log(f"[{name}] 画面字幕识别跳过（{ocr_err}），自动切换至语音识别...")
                     raw_segments = []
@@ -193,6 +200,7 @@ class BatchPipeline:
                         video_path, "翻译中", 0.36 + p * 0.24, "DeepSeek 翻译中...", account_name=account_name
                     ),
                     strict_visual_sync=used_ocr,
+                    cancel_event=self._cancel_event,
                 )
             if self._cancel_event.is_set():
                 raise InterruptedError("用户取消任务")
@@ -226,6 +234,7 @@ class BatchPipeline:
                         video_path, "导出成片", 0.62 + p * 0.38, f"正在压制成片{wm_tip}...", account_name=account_name
                     ),
                     watermark_text=account_name,
+                    cancel_event=self._cancel_event,
                 )
 
             elapsed = int(round(time.time() - t0))
