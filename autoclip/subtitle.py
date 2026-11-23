@@ -94,8 +94,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         txt = _escape_ass_text(it.text)
         if not txt:
             continue
+        # 防超宽溢出：估算该行像素宽度，若超过画面宽度的 92% 自动微调字号，保证完整居中不裁切
+        vis_chars = sum(1.0 if "\u4e00" <= ch <= "\u9fff" else 0.58 for ch in txt)
+        est_px = vis_chars * font_size * 0.96
+        max_px = video_width * 0.92
+        fs_override = ""
+        if est_px > max_px and est_px > 0:
+            fit_fs = max(24, int(font_size * (max_px / est_px)))
+            fs_override = f"\\fs{fit_fs}"
         lines.append(
-            f"Dialogue: 0,{start_s},{end_s},Senior,,0,0,0,,{{\\pos({cx},{cy})\\blur0.8}}{txt}\n"
+            f"Dialogue: 0,{start_s},{end_s},Senior,,0,0,0,,{{\\pos({cx},{cy})\\blur0.8{fs_override}}}{txt}\n"
         )
 
     out_path.write_text("".join(lines), encoding="utf-8-sig")

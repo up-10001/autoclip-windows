@@ -108,9 +108,13 @@ class WhisperEngine:
                 language=lang,
                 beam_size=5,
                 vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 300},
+                vad_parameters={
+                    "min_silence_duration_ms": 200,
+                    "speech_pad_ms": 200,
+                    "threshold": 0.35,
+                },
                 word_timestamps=True,
-                condition_on_previous_text=True,
+                condition_on_previous_text=False,
             )
 
             total_dur = max(float(getattr(info, "duration", 0.0) or 0.0), 1.0)
