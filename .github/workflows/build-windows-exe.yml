@@ -5,6 +5,9 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -56,3 +59,14 @@ jobs:
         with:
           name: AutoClip-Windows-RTX3060
           path: AutoClip-Windows-RTX3060.zip
+
+      - name: Publish direct-download GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          if (gh release view v1.0.0 2>$null) {
+            gh release upload v1.0.0 AutoClip-Windows-RTX3060.zip --clobber
+          } else {
+            gh release create v1.0.0 AutoClip-Windows-RTX3060.zip --title "AutoClip v1.0.0 (Windows RTX 3060)" --notes "直接下载解压后，双击 AutoClip.exe 即可使用。"
+          }
