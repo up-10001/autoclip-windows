@@ -56,8 +56,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-hotfix.exe" -Force
-          if (gh release view v1.0.1 2>$null) {
-            gh release upload v1.0.1 AutoClip-hotfix.exe --clobber
+          if (gh release view v1.0.2 2>$null) {
+            gh release upload v1.0.2 AutoClip-hotfix.exe --clobber
           } else {
-            gh release create v1.0.1 AutoClip-hotfix.exe --title "AutoClip v1.0.1 热补丁 (仅需替换 AutoClip.exe)" --notes "1. 修复中文字幕跟不上英文与漏句问题（ID锁定Whisper真实时间轴 + 漏句自动补翻 + 优化VAD防吞短句）`n2. 内置 CUDA DLL 路径自动注册`n3. 新增超宽单行自适应缩放，防止字出画面`n使用方法：下载后改名为 AutoClip.exe，覆盖原文件夹里的 AutoClip.exe 即可，无需重新下载 1.4G 完整包！"
+            gh release create v1.0.2 AutoClip-hotfix.exe --title "AutoClip v1.0.2 热补丁 (修复漏句/不同步/极短碎片)" --notes "1. 关闭易误吞美剧笑声对白的 Silero VAD，彻底解决多处漏句`n2. 基于词级时间戳精准按单句切分，解决中英文慢半拍/不同步`n3. 过滤“嗯……”等无意义极短碎片并自动合并紧邻短句`n使用方法：下载后直接替换原文件夹里的 AutoClip.exe 即可！"
           }

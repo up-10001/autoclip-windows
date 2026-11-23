@@ -62,17 +62,19 @@ def test_deepseek_connection(cfg: AppConfig) -> tuple[bool, str]:
 def _build_system_prompt(max_chars: int, min_chars: int) -> str:
     return (
         "你是一位专业的中老年短视频字幕翻译与断句编辑，擅长将英文台词翻译成自然、通俗、易懂的中文口语字幕。\n\n"
-        "【最重要规则——严禁漏翻】\n"
-        "输入是一组带整数 id 的英文对白片段。你输出的 items 中必须覆盖输入里的**每一个 id**，一个都不能漏！\n\n"
+        "【最重要规则——严禁漏翻、严禁乱并导致不同步】\n"
+        "输入是一组已经按说话时间精准切好的带整数 id 的英文单句。你输出的 items 中必须覆盖输入里的**每一个 id**，一个都不能漏！\n\n"
         "【字幕排版规范】\n"
         "1. 【单行呈现】每条 zh 必须是一行纯中文，严禁换行符。\n"
-        f"2. 【长度均匀】每条尽量控制在 {min_chars} 到 {max_chars} 个汉字之间；若单个 id 译文较长，可拆成两条放在同一项的 lines 数组里，或保持完整一句话。\n"
-        "3. 【语义完整、不生硬切半截】如果相邻两个短 id 合起来才是一句完整的话（且总长度不超过 "
-        f"{max_chars} 字），可以把它们合并为一项，ids 写成 [id1, id2]。如果合并后会太长，就保持各自对应自己的 id，不要合并太长。\n"
+        f"2. 【长度均匀、消灭碎片】每条尽量控制在 {min_chars} 到 {max_chars} 个汉字之间。"
+        "绝不要把纯语气词（如 uh/um/oh/well）单独输出成“嗯……”“呃……”这种极短无意义字幕，请自然融入句子意译。\n"
+        "3. 【精准对齐时间轴】原则上**每个完整英文句对应 1 个 id（一对一翻译）**，这样中文就能和画面英文字幕严丝合缝！"
+        f"只有当相邻两个 id 都是极短残句（各自不到 4 个词且合并后不超过 {max_chars} 字）时，才允许把它们合并为 ids: [id1, id2]。"
+        "绝不要把两句独立的完整对话硬合并成一个长句！\n"
         "4. 【口语自然】面向中国中老年观众，地道通顺，句末不要加句号“。”，问号和感叹号保留。\n"
-        "5. 【按 id 顺序递增】输出必须严格按 id 从小到大排列，不要回头引用旧 id。\n\n"
+        "5. 【按 id 顺序递增】输出必须严格按 id 从小到大排列。\n\n"
         "请只输出合法 JSON 对象，格式如下：\n"
-        '{"items": [{"ids": [1], "zh": "你怎么知道的？"}, {"ids": [2, 3], "zh": "那我岂不是要当间谍了？"}]}'
+        '{"items": [{"ids": [1], "zh": "你怎么知道的？"}, {"ids": [2], "zh": "你离我太远了，根本看不清"}]}'
     )
 
 
@@ -263,8 +265,11 @@ def _split_overlong_item(item: SubtitleItem, max_chars: int) -> list[SubtitleIte
     )
 
 
+_PURE_ZH_FILLER = re.compile(r"^[嗯呃哦啊哎呀嘿喂哈…\.\!\?，。！？\s]{1,4}$")
+
+
 def normalize_subtitles(items: list[SubtitleItem], cfg: AppConfig) -> list[SubtitleItem]:
-    """字幕后处理：保证单行、无重叠、并平滑衔接相邻短间隔。"""
+    """字幕后处理：消灭极短无意义语气词、合并紧邻碎片、保证单行无重叠并平滑衔接。"""
     if not items:
         return []
 
@@ -273,10 +278,31 @@ def normalize_subtitles(items: list[SubtitleItem], cfg: AppConfig) -> list[Subti
     for it in sorted_items:
         expanded.extend(_split_overlong_item(it, cfg.max_chars_per_line))
 
-    final_items: list[SubtitleItem] = []
+    # 1. 过滤纯语气词碎片（如单独一行“嗯……”），或合并紧邻极短句（<=3字 且 间隔<=0.35s）
+    merged: list[SubtitleItem] = []
     for it in expanded:
-        if not it.text:
+        txt = _clean_text(it.text)
+        if not txt or _PURE_ZH_FILLER.match(txt):
             continue
+        it.text = txt
+        if merged:
+            prev = merged[-1]
+            gap = it.start - prev.end
+            comb = f"{prev.text}，{it.text}"
+            if (
+                len(prev.text) <= 3
+                and -0.2 <= gap <= 0.35
+                and (it.end - prev.start) <= 3.8
+                and _visual_length(comb) <= cfg.max_chars_per_line
+            ):
+                prev.text = comb
+                prev.end = max(prev.end, it.end)
+                continue
+        merged.append(it)
+
+    # 2. 消除重叠并平滑衔接（间隔 <= 0.25s 直接衔接，避免闪烁）
+    final_items: list[SubtitleItem] = []
+    for it in merged:
         if final_items:
             prev = final_items[-1]
             if it.start < prev.end:
