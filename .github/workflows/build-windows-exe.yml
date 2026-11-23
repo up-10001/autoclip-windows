@@ -50,33 +50,34 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Package v1.0.3 OCR hot-patch zip (~50MB instead of 1.4GB)
+      - name: Package v1.0.4 OCR hot-patch zip (with shapely.libs DLLs)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path patch_pkg/_internal | Out-Null
           Copy-Item "dist/AutoClip/AutoClip.exe" "patch_pkg/AutoClip.exe" -Force
-          $ocrDirs = @("rapidocr_onnxruntime", "cv2", "pyclipper", "shapely", "yaml")
-          foreach ($d in $ocrDirs) {
-            $src = "dist/AutoClip/_internal/$d"
-            if (Test-Path $src) {
-              Copy-Item $src "patch_pkg/_internal/$d" -Recurse -Force
-            }
-          }
-          # Copy any top-level pydantic/pyclipper/shapely/cv2 pyd/dll files in _internal
-          Get-ChildItem "dist/AutoClip/_internal" -File | Where-Object {
-            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six)"
+          Get-ChildItem "dist/AutoClip/_internal" -Directory | Where-Object {
+            $_.Name -match "^(rapidocr|cv2|pyclipper|shapely|yaml|PIL)" -or $_.Name -like "*.libs"
+          } | Where-Object {
+            $_.Name -notmatch "^(nvidia|ctranslate2|onnxruntime|av|tokenizers)"
           } | ForEach-Object {
+            Write-Host "Packing dir: $($_.Name)"
+            Copy-Item $_.FullName "patch_pkg/_internal/$($_.Name)" -Recurse -Force
+          }
+          Get-ChildItem "dist/AutoClip/_internal" -File | Where-Object {
+            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six|libgeos|msvcp|vcruntime)"
+          } | ForEach-Object {
+            Write-Host "Packing file: $($_.Name)"
             Copy-Item $_.FullName "patch_pkg/_internal/" -Force
           }
-          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v1.0.3-patch.zip" -Force
+          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v1.0.4-patch.zip" -Force
 
-      - name: Publish v1.0.3 hot-patch Release
+      - name: Publish v1.0.4 hot-patch Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          if (gh release view v1.0.3 2>$null) {
-            gh release upload v1.0.3 AutoClip-v1.0.3-patch.zip --clobber
+          if (gh release view v1.0.4 2>$null) {
+            gh release upload v1.0.4 AutoClip-v1.0.4-patch.zip --clobber
           } else {
-            gh release create v1.0.3 AutoClip-v1.0.3-patch.zip --title "AutoClip v1.0.3 Hotfix (OCR Visual Sync)" --notes "Add onscreen English subtitle OCR mode for 100pct frame-accurate sync with English subtitles, update title to v1.0.3. Unzip into existing AutoClip folder and overwrite."
+            gh release create v1.0.4 AutoClip-v1.0.4-patch.zip --title "AutoClip v1.0.4 Hotfix (Fix OCR shapely DLL)" --notes "Include shapely.libs GEOS DLLs so onscreen English subtitle OCR works out of the box. Unzip into AutoClip folder and replace all."
           }

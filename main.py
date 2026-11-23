@@ -18,12 +18,21 @@ def _register_windows_cuda_dlls() -> None:
         if hasattr(sys, "_MEIPASS"):
             base_dirs.append(Path(sys._MEIPASS))
     for base in base_dirs:
-        for sub in (
+        candidates = [
             base / "nvidia" / "cublas" / "bin",
             base / "nvidia" / "cudnn" / "bin",
             base / "_internal" / "nvidia" / "cublas" / "bin",
             base / "_internal" / "nvidia" / "cudnn" / "bin",
-        ):
+            base / "_internal" / "shapely.libs",
+            base / "shapely.libs",
+        ]
+        # 同时自动注册 _internal 下所有 *.libs 目录（确保 shapely/cv2/yaml 动态库秒加载）
+        for parent in (base, base / "_internal"):
+            if parent.is_dir():
+                for item in parent.iterdir():
+                    if item.is_dir() and item.name.endswith(".libs"):
+                        candidates.append(item)
+        for sub in candidates:
             if sub.is_dir():
                 try:
                     os.add_dll_directory(str(sub))
