@@ -1,0 +1,8 @@
+faster-whisper>=1.1.0
+ctranslate2>=4.5.0
+httpx>=0.27.0
+Pillow>=10.0.0
+numpy>=1.26.0
+# Windows RTX 3060 CUDA 12 运行时依赖（无需手动安装庞大的 CUDA Toolkit）
+nvidia-cublas-cu12; sys_platform == "win32"
+nvidia-cudnn-cu12; sys_platform == "win32"

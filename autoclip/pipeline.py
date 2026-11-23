@@ -1,0 +1,219 @@
+"""批量流水线调度模块：支持 10-20+ 视频批量导入，按硬件配置自动并行或顺序剪辑。"""
+
+from __future__ import annotations
+
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from .asr import get_whisper_engine
+from .config import AppConfig
+from .hardware import HardwareProfile
+from .renderer import render_video
+from .subtitle import write_srt_subtitle
+from .translator import SubtitleItem, translate_segments
+
+
+@dataclass
+class TaskStatus:
+    video_path: Path
+    state: str  # 等待中 / 语音识别 / DeepSeek翻译 / 等待校对 / 渲染导出 / 已完成 / 失败
+    progress: float = 0.0
+    message: str = ""
+    output_path: Optional[Path] = None
+
+
+def resolve_output_path(video_path: Path, cfg: AppConfig) -> Path:
+    ext = "mov" if cfg.output_format.lower() == "mov" else "mp4"
+    if cfg.output_dir.strip():
+        out_dir = Path(cfg.output_dir.strip())
+    else:
+        out_dir = video_path.parent / "已剪辑输出"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{video_path.stem}_已剪辑.{ext}"
+
+
+class BatchPipeline:
+    """自适应并发的批量剪辑引擎。
+
+    当机器性能充足（如 RTX 3060 12G）：
+    - 使用分级并发：ASR 阶段共享 GPU 显存锁（不爆显存），同时 DeepSeek 翻译可多路并发，
+      FFmpeg NVENC 压制可按显卡能力 2 路并行，整体吞吐最大化；
+    当性能不足或选择顺序模式时：
+    - 自动退回严格单路顺序执行，确保不卡顿、不崩溃。
+    """
+
+    def __init__(
+        self,
+        cfg: AppConfig,
+        hw: HardwareProfile,
+        status_cb: Optional[Callable[[TaskStatus], None]] = None,
+        log_cb: Optional[Callable[[str], None]] = None,
+        review_cb: Optional[Callable[[Path, list[SubtitleItem]], Optional[list[SubtitleItem]]]] = None,
+    ) -> None:
+        self.cfg = cfg
+        self.hw = hw
+        self.status_cb = status_cb
+        self.log_cb = log_cb
+        self.review_cb = review_cb
+        self._cancel_event = threading.Event()
+        self._render_sem: Optional[threading.Semaphore] = None
+        self._translate_sem: Optional[threading.Semaphore] = None
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def _emit(
+        self,
+        video_path: Path,
+        state: str,
+        progress: float,
+        message: str = "",
+        output_path: Optional[Path] = None,
+    ) -> None:
+        if self.status_cb:
+            self.status_cb(
+                TaskStatus(
+                    video_path=video_path,
+                    state=state,
+                    progress=progress,
+                    message=message,
+                    output_path=output_path,
+                )
+            )
+
+    def _log(self, msg: str) -> None:
+        if self.log_cb:
+            self.log_cb(msg)
+
+    def _determine_concurrency(self) -> tuple[int, int, int]:
+        """返回 (总任务并发数, 压制并发数, 翻译并发数)。"""
+        mode = (self.cfg.concurrency_mode or "auto").strip().lower()
+        if self.cfg.review_subtitles:
+            # 人工校对模式下采用单任务顺序，避免同时弹出多个校对框
+            return 1, 1, 1
+        if mode == "auto":
+            render_w = self.hw.recommended_render_workers
+            trans_w = self.hw.recommended_translate_workers
+            total_w = max(render_w + 1, trans_w) if render_w > 1 else 1
+            return total_w, render_w, trans_w
+        try:
+            n = max(1, min(4, int(mode)))
+        except ValueError:
+            n = 1
+        return n, n, max(n, 2)
+
+    def process_single(self, video_path: Path) -> TaskStatus:
+        name = video_path.name
+        if self._cancel_event.is_set():
+            st = TaskStatus(video_path, "已取消", 0.0, "任务已取消")
+            self._emit(video_path, st.state, st.progress, st.message)
+            return st
+
+        try:
+            # 阶段 1：Whisper 本地语音识别（0% -> 35%）
+            self._emit(video_path, "语音识别", 0.02, "准备识别英文语音...")
+            engine = get_whisper_engine()
+            raw_segments = engine.transcribe(
+                video_path,
+                self.cfg,
+                self.hw,
+                log_cb=lambda m: self._log(f"[{name}] {m}"),
+                progress_cb=lambda p: self._emit(video_path, "语音识别", 0.02 + p * 0.33, "正在识别语音..."),
+            )
+            if self._cancel_event.is_set():
+                raise InterruptedError("用户取消任务")
+
+            if not raw_segments:
+                raise RuntimeError("未识别到有效语音内容，请检查原视频音轨。")
+
+            # 阶段 2：DeepSeek 翻译与语义断句（35% -> 60%）
+            self._emit(video_path, "DeepSeek翻译", 0.36, "正在翻译并整理单行字幕...")
+            assert self._translate_sem is not None
+            with self._translate_sem:
+                subtitles = translate_segments(
+                    raw_segments,
+                    self.cfg,
+                    log_cb=lambda m: self._log(f"[{name}] {m}"),
+                    progress_cb=lambda p: self._emit(
+                        video_path, "DeepSeek翻译", 0.36 + p * 0.24, "DeepSeek 翻译中..."
+                    ),
+                )
+            if self._cancel_event.is_set():
+                raise InterruptedError("用户取消任务")
+
+            # 可选阶段：人工校对字幕
+            if self.cfg.review_subtitles and self.review_cb is not None:
+                self._emit(video_path, "等待校对", 0.60, "请在弹窗中确认或微调字幕...")
+                edited = self.review_cb(video_path, subtitles)
+                if edited is None:
+                    raise InterruptedError("校对已取消")
+                subtitles = edited
+
+            out_path = resolve_output_path(video_path, self.cfg)
+            if self.cfg.keep_srt:
+                srt_path = out_path.with_suffix(".srt")
+                write_srt_subtitle(subtitles, srt_path)
+
+            # 阶段 3：蒙版去重 + 字幕压制（60% -> 100%）
+            self._emit(video_path, "渲染导出", 0.62, "等待显卡渲染队列...")
+            assert self._render_sem is not None
+            with self._render_sem:
+                if self._cancel_event.is_set():
+                    raise InterruptedError("用户取消任务")
+                render_video(
+                    video_path,
+                    out_path,
+                    subtitles,
+                    self.cfg,
+                    self.hw,
+                    log_cb=lambda m: self._log(f"[{name}] {m}"),
+                    progress_cb=lambda p: self._emit(
+                        video_path, "渲染导出", 0.62 + p * 0.38, "正在压制成片..."
+                    ),
+                )
+
+            st = TaskStatus(video_path, "已完成", 1.0, f"输出：{out_path.name}", out_path)
+            self._emit(video_path, st.state, st.progress, st.message, st.output_path)
+            return st
+
+        except InterruptedError:
+            st = TaskStatus(video_path, "已取消", 0.0, "已停止")
+            self._emit(video_path, st.state, st.progress, st.message)
+            return st
+        except Exception as e:
+            self._log(f"[{name}] 处理失败：{e}")
+            st = TaskStatus(video_path, "失败", 0.0, str(e))
+            self._emit(video_path, st.state, st.progress, st.message)
+            return st
+
+    def run_batch(self, video_paths: list[Path]) -> list[TaskStatus]:
+        total_w, render_w, trans_w = self._determine_concurrency()
+        self._render_sem = threading.Semaphore(render_w)
+        self._translate_sem = threading.Semaphore(trans_w)
+
+        mode_desc = (
+            f"并行模式（总流水线 {total_w} 路，压制 {render_w} 路，翻译 {trans_w} 路）"
+            if total_w > 1
+            else "顺序模式（单路稳定执行）"
+        )
+        self._log(f"开始批量剪辑，共 {len(video_paths)} 个视频 | 调度策略：{mode_desc}")
+
+        for vp in video_paths:
+            self._emit(vp, "等待中", 0.0, "排队中...")
+
+        results: list[TaskStatus] = []
+        if total_w <= 1 or len(video_paths) == 1:
+            for vp in video_paths:
+                if self._cancel_event.is_set():
+                    break
+                results.append(self.process_single(vp))
+            return results
+
+        with ThreadPoolExecutor(max_workers=total_w) as pool:
+            fut_map = {pool.submit(self.process_single, vp): vp for vp in video_paths}
+            for fut in as_completed(fut_map):
+                results.append(fut.result())
+        return results

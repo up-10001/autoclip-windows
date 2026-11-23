@@ -1,0 +1,58 @@
+name: Build Windows EXE (RTX 3060)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download Windows FFmpeg and Real-ESRGAN binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "bin/ffmpeg.zip"
+          Expand-Archive -Path "bin/ffmpeg.zip" -DestinationPath "bin/tmp" -Force
+          $ff = Get-ChildItem -Path "bin/tmp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          $fp = Get-ChildItem -Path "bin/tmp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          Copy-Item $ff.FullName "bin/ffmpeg.exe" -Force
+          Copy-Item $fp.FullName "bin/ffprobe.exe" -Force
+          Remove-Item "bin/tmp" -Recurse -Force
+          Remove-Item "bin/ffmpeg.zip" -Force
+
+          New-Item -ItemType Directory -Force -Path bin/realesrgan | Out-Null
+          try {
+            Invoke-WebRequest -Uri "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip" -OutFile "bin/realesrgan.zip"
+            Expand-Archive -Path "bin/realesrgan.zip" -DestinationPath "bin/realesrgan" -Force
+            Remove-Item "bin/realesrgan.zip" -Force
+          } catch {
+            Write-Host "Real-ESRGAN download skipped: $_"
+          }
+
+      - name: Build AutoClip.exe
+        run: pyinstaller --noconfirm --clean AutoClip.spec
+
+      - name: Zip release package
+        shell: pwsh
+        run: Compress-Archive -Path "dist/AutoClip/*" -DestinationPath "AutoClip-Windows-RTX3060.zip" -Force
+
+      - name: Upload Windows EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClip-Windows-RTX3060
+          path: AutoClip-Windows-RTX3060.zip
