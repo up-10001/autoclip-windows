@@ -17,7 +17,7 @@ hiddenimports = [
     "av",
 ]
 
-for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "onnxruntime"):
+for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "onnxruntime", "rapidocr_onnxruntime"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

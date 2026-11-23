@@ -29,6 +29,12 @@ ENHANCE_LABEL_TO_CODE = {
 }
 ENHANCE_CODE_TO_LABEL = {v: k for k, v in ENHANCE_LABEL_TO_CODE.items()}
 
+SUB_SRC_LABEL_TO_CODE = {
+    "优先识别画面英文字幕 (100%对齐，推荐)": "ocr_first",
+    "仅语音识别 Whisper (无英文字幕视频)": "whisper",
+}
+SUB_SRC_CODE_TO_LABEL = {v: k for k, v in SUB_SRC_LABEL_TO_CODE.items()}
+
 
 class SubtitleReviewDialog(tk.Toplevel):
     """半自动校对模式弹窗：允许用户在压制前快速检查或修改中文字幕。"""
@@ -121,6 +127,11 @@ class AutoClipApp(tk.Tk):
         self.var_api_model = tk.StringVar(value=self.cfg.api_model)
         self.var_show_key = tk.BooleanVar(value=False)
 
+        self.var_sub_source = tk.StringVar(
+            value=SUB_SRC_CODE_TO_LABEL.get(
+                self.cfg.subtitle_source, "优先识别画面英文字幕 (100%对齐，推荐)"
+            )
+        )
         self.var_whisper_model = tk.StringVar(value=self.cfg.whisper_model)
         self.var_output_fmt = tk.StringVar(value=self.cfg.output_format.lower())
         self.var_concurrency = tk.StringVar(value=self.cfg.concurrency_mode)
@@ -265,6 +276,16 @@ class AutoClipApp(tk.Tk):
         ttk.Label(tab_basic, text="(auto=按3060自动并行)", foreground="#666").grid(row=r, column=2, sticky=tk.W, padx=4)
 
         r += 1
+        ttk.Label(tab_basic, text="字幕识别方式:").grid(row=r, column=0, sticky=tk.W, pady=5)
+        ttk.Combobox(
+            tab_basic,
+            textvariable=self.var_sub_source,
+            values=list(SUB_SRC_LABEL_TO_CODE.keys()),
+            state="readonly",
+            width=30,
+        ).grid(row=r, column=1, columnspan=2, sticky=tk.W, pady=5)
+
+        r += 1
         ttk.Label(tab_basic, text="语音识别模型:").grid(row=r, column=0, sticky=tk.W, pady=5)
         ttk.Combobox(
             tab_basic,
@@ -383,6 +404,7 @@ class AutoClipApp(tk.Tk):
         self.cfg.api_key = self.var_api_key.get().strip()
         self.cfg.api_base_url = self.var_api_url.get().strip() or "https://api.deepseek.com"
         self.cfg.api_model = self.var_api_model.get().strip() or "deepseek-chat"
+        self.cfg.subtitle_source = SUB_SRC_LABEL_TO_CODE.get(self.var_sub_source.get(), "ocr_first")
         self.cfg.whisper_model = self.var_whisper_model.get()
         self.cfg.output_format = self.var_output_fmt.get().lower()
         self.cfg.concurrency_mode = self.var_concurrency.get()

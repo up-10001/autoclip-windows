@@ -11,6 +11,7 @@ from typing import Callable, Optional
 from .asr import get_whisper_engine
 from .config import AppConfig
 from .hardware import HardwareProfile
+from .ocr_sub import extract_onscreen_english_subtitles
 from .renderer import render_video
 from .subtitle import write_srt_subtitle
 from .translator import SubtitleItem, translate_segments
@@ -113,21 +114,45 @@ class BatchPipeline:
             return st
 
         try:
-            # 阶段 1：Whisper 本地语音识别（0% -> 35%）
-            self._emit(video_path, "语音识别", 0.02, "准备识别英文语音...")
-            engine = get_whisper_engine()
-            raw_segments = engine.transcribe(
-                video_path,
-                self.cfg,
-                self.hw,
-                log_cb=lambda m: self._log(f"[{name}] {m}"),
-                progress_cb=lambda p: self._emit(video_path, "语音识别", 0.02 + p * 0.33, "正在识别语音..."),
-            )
+            # 阶段 1：优先扫描画面英文字幕（100%对齐英文字幕出现与消失时长），若无硬字幕则自动回退 Whisper 语音识别
+            raw_segments = []
+            used_ocr = False
+            if (self.cfg.subtitle_source or "ocr_first") == "ocr_first":
+                self._emit(video_path, "识别英文字幕", 0.02, "正在扫描画面英文字幕时间轴...")
+                try:
+                    raw_segments = extract_onscreen_english_subtitles(
+                        video_path,
+                        log_cb=lambda m: self._log(f"[{name}] {m}"),
+                        progress_cb=lambda p: self._emit(
+                            video_path, "识别英文字幕", 0.02 + p * 0.33, "正在对齐画面英文字幕..."
+                        ),
+                    )
+                    if len(raw_segments) >= 3:
+                        used_ocr = True
+                    else:
+                        self._log(f"[{name}] 画面未检测到足够英文字幕（仅 {len(raw_segments)} 条），自动切换至 Whisper 语音识别...")
+                        raw_segments = []
+                except Exception as ocr_err:
+                    self._log(f"[{name}] 画面字幕识别跳过（{ocr_err}），自动切换至 Whisper 语音识别...")
+                    raw_segments = []
+
+            if not used_ocr:
+                self._emit(video_path, "语音识别", 0.02, "准备识别英文语音...")
+                engine = get_whisper_engine()
+                raw_segments = engine.transcribe(
+                    video_path,
+                    self.cfg,
+                    self.hw,
+                    log_cb=lambda m: self._log(f"[{name}] {m}"),
+                    progress_cb=lambda p: self._emit(
+                        video_path, "语音识别", 0.02 + p * 0.33, "正在识别语音..."
+                    ),
+                )
             if self._cancel_event.is_set():
                 raise InterruptedError("用户取消任务")
 
             if not raw_segments:
-                raise RuntimeError("未识别到有效语音内容，请检查原视频音轨。")
+                raise RuntimeError("未识别到有效英文对白或字幕，请检查原视频。")
 
             # 阶段 2：DeepSeek 翻译与语义断句（35% -> 60%）
             self._emit(video_path, "DeepSeek翻译", 0.36, "正在翻译并整理单行字幕...")
@@ -140,6 +165,7 @@ class BatchPipeline:
                     progress_cb=lambda p: self._emit(
                         video_path, "DeepSeek翻译", 0.36 + p * 0.24, "DeepSeek 翻译中..."
                     ),
+                    strict_visual_sync=used_ocr,
                 )
             if self._cancel_event.is_set():
                 raise InterruptedError("用户取消任务")

@@ -42,6 +42,8 @@ class AppConfig:
     api_model: str = "deepseek-chat"
     api_timeout: int = 120
 
+    # 识别方式：ocr_first（优先识别画面英文字幕，100%对齐原英文字幕时长） / whisper（纯语音识别）
+    subtitle_source: str = "ocr_first"
     # Whisper 语音识别配置
     whisper_model: str = "large-v3-turbo"
     source_language: str = "en"

@@ -59,7 +59,20 @@ def test_deepseek_connection(cfg: AppConfig) -> tuple[bool, str]:
         return False, f"网络请求失败：{e}"
 
 
-def _build_system_prompt(max_chars: int, min_chars: int) -> str:
+def _build_system_prompt(max_chars: int, min_chars: int, strict_visual_sync: bool = False) -> str:
+    if strict_visual_sync:
+        return (
+            "你是一位专业的中老年短视频字幕翻译编辑，负责把视频画面中提取的英文字幕逐条翻译为自然、通俗、易懂的中文单行字幕。\n\n"
+            "【最高优先级规则——画面逐条严格对齐】\n"
+            "输入中的每一个 id 对应画面上出现的一条英文字幕卡片。你必须**严格一对一翻译每一个 id**（每个 item 的 ids 只写单个 [id]，绝不合并、绝不漏掉任何一个 id），"
+            "这样画面有英文字幕时就一定同时有中文字幕，起止时间完全同步！\n\n"
+            "【翻译与排版规范】\n"
+            "1. 【自动修正 OCR 小错字】输入的英文由画面 OCR 提取，若偶有拼写粘连或个别字母误识（如 Lookatherleg -> Look at her leg），请结合上下文自动理解正确意思再翻译。\n"
+            "2. 【单行呈现】每条 zh 必须是一行纯中文，严禁换行符。\n"
+            f"3. 【长度精炼均匀】尽量控制在 {min_chars} 到 {max_chars} 个汉字之间，语言凝练地道，适合中国中老年观众阅读；句末不要加句号“。”，问号和感叹号保留。\n"
+            "4. 【按 id 顺序递增】只输出合法 JSON 对象：\n"
+            '{"items": [{"ids": [1], "zh": "我来拿"}, {"ids": [2], "zh": "给你妈打电话"}]}'
+        )
     return (
         "你是一位专业的中老年短视频字幕翻译与断句编辑，擅长将英文台词翻译成自然、通俗、易懂的中文口语字幕。\n\n"
         "【最重要规则——严禁漏翻、严禁乱并导致不同步】\n"
@@ -81,8 +94,9 @@ def _build_system_prompt(max_chars: int, min_chars: int) -> str:
 def _call_deepseek_id_batch(
     batch: list[RawSegment],
     cfg: AppConfig,
+    strict_visual_sync: bool = False,
 ) -> list[SubtitleItem]:
-    """用整数 ID 锁定 Whisper 真实时间轴，彻底根除时间戳漂移与漏句问题。"""
+    """用整数 ID 锁定真实时间轴，彻底根除时间戳漂移与漏句问题。"""
     url = f"{_normalize_base_url(cfg.api_base_url)}/chat/completions"
     headers = {
         "Authorization": f"Bearer {cfg.api_key.strip()}",
@@ -100,7 +114,12 @@ def _call_deepseek_id_batch(
     payload = {
         "model": cfg.api_model.strip() or "deepseek-chat",
         "messages": [
-            {"role": "system", "content": _build_system_prompt(cfg.max_chars_per_line, cfg.min_chars_per_line)},
+            {
+                "role": "system",
+                "content": _build_system_prompt(
+                    cfg.max_chars_per_line, cfg.min_chars_per_line, strict_visual_sync=strict_visual_sync
+                ),
+            },
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.2,
@@ -268,8 +287,10 @@ def _split_overlong_item(item: SubtitleItem, max_chars: int) -> list[SubtitleIte
 _PURE_ZH_FILLER = re.compile(r"^[嗯呃哦啊哎呀嘿喂哈…\.\!\?，。！？\s]{1,4}$")
 
 
-def normalize_subtitles(items: list[SubtitleItem], cfg: AppConfig) -> list[SubtitleItem]:
-    """字幕后处理：消灭极短无意义语气词、合并紧邻碎片、保证单行无重叠并平滑衔接。"""
+def normalize_subtitles(
+    items: list[SubtitleItem], cfg: AppConfig, strict_visual_sync: bool = False
+) -> list[SubtitleItem]:
+    """字幕后处理：保证单行无重叠；语音模式下过滤极短语气词，画面OCR模式下严格保留每条英文字幕对应中文。"""
     if not items:
         return []
 
@@ -278,14 +299,15 @@ def normalize_subtitles(items: list[SubtitleItem], cfg: AppConfig) -> list[Subti
     for it in sorted_items:
         expanded.extend(_split_overlong_item(it, cfg.max_chars_per_line))
 
-    # 1. 过滤纯语气词碎片（如单独一行“嗯……”），或合并紧邻极短句（<=3字 且 间隔<=0.35s）
     merged: list[SubtitleItem] = []
     for it in expanded:
         txt = _clean_text(it.text)
-        if not txt or _PURE_ZH_FILLER.match(txt):
+        if not txt:
+            continue
+        if not strict_visual_sync and _PURE_ZH_FILLER.match(txt):
             continue
         it.text = txt
-        if merged:
+        if not strict_visual_sync and merged:
             prev = merged[-1]
             gap = it.start - prev.end
             comb = f"{prev.text}，{it.text}"
@@ -300,7 +322,7 @@ def normalize_subtitles(items: list[SubtitleItem], cfg: AppConfig) -> list[Subti
                 continue
         merged.append(it)
 
-    # 2. 消除重叠并平滑衔接（间隔 <= 0.25s 直接衔接，避免闪烁）
+    # 2. 消除重叠并平滑衔接（间隔 <= 0.20s 直接衔接，避免闪烁）
     final_items: list[SubtitleItem] = []
     for it in merged:
         if final_items:
@@ -314,7 +336,7 @@ def normalize_subtitles(items: list[SubtitleItem], cfg: AppConfig) -> list[Subti
                     it.start = prev.end
                     if it.end <= it.start + 0.2:
                         it.end = it.start + 0.35
-            elif 0.0 < (it.start - prev.end) <= 0.25:
+            elif 0.0 < (it.start - prev.end) <= 0.20:
                 prev.end = it.start
         final_items.append(it)
 
@@ -328,6 +350,7 @@ def translate_segments(
     cfg: AppConfig,
     log_cb: Optional[Callable[[str], None]] = None,
     progress_cb: Optional[Callable[[float], None]] = None,
+    strict_visual_sync: bool = False,
 ) -> list[SubtitleItem]:
     """分批调用 DeepSeek API 翻译（ID 锁定时间轴，绝不漂移、绝不漏句）。"""
     if not raw_segments:
@@ -348,7 +371,9 @@ def translate_segments(
         last_err: Optional[Exception] = None
         for attempt in range(3):
             try:
-                batch_subs = _call_deepseek_id_batch(batch, cfg)
+                batch_subs = _call_deepseek_id_batch(
+                    batch, cfg, strict_visual_sync=strict_visual_sync
+                )
                 all_subs.extend(batch_subs)
                 last_err = None
                 break
@@ -362,7 +387,7 @@ def translate_segments(
         if progress_cb:
             progress_cb((b_idx + 1) / total_batches)
 
-    normalized = normalize_subtitles(all_subs, cfg)
+    normalized = normalize_subtitles(all_subs, cfg, strict_visual_sync=strict_visual_sync)
     if log_cb:
         log_cb(f"翻译与语义断句完成，共生成 {len(normalized)} 条单行中文字幕。")
     return normalized

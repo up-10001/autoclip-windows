@@ -50,14 +50,33 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Publish hot-patch AutoClip.exe (tiny ~10MB)
+      - name: Package v1.0.3 OCR hot-patch zip (~50MB instead of 1.4GB)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path patch_pkg/_internal | Out-Null
+          Copy-Item "dist/AutoClip/AutoClip.exe" "patch_pkg/AutoClip.exe" -Force
+          $ocrDirs = @("rapidocr_onnxruntime", "cv2", "pyclipper", "shapely", "yaml")
+          foreach ($d in $ocrDirs) {
+            $src = "dist/AutoClip/_internal/$d"
+            if (Test-Path $src) {
+              Copy-Item $src "patch_pkg/_internal/$d" -Recurse -Force
+            }
+          }
+          # Copy any top-level pydantic/pyclipper/shapely/cv2 pyd/dll files in _internal
+          Get-ChildItem "dist/AutoClip/_internal" -File | Where-Object {
+            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six)"
+          } | ForEach-Object {
+            Copy-Item $_.FullName "patch_pkg/_internal/" -Force
+          }
+          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v1.0.3-patch.zip" -Force
+
+      - name: Publish v1.0.3 hot-patch Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-hotfix.exe" -Force
-          if (gh release view v1.0.2 2>$null) {
-            gh release upload v1.0.2 AutoClip-hotfix.exe --clobber
+          if (gh release view v1.0.3 2>$null) {
+            gh release upload v1.0.3 AutoClip-v1.0.3-patch.zip --clobber
           } else {
-            gh release create v1.0.2 AutoClip-hotfix.exe --title "AutoClip v1.0.2 Hotfix" --notes "Fix missing sitcom subtitles, word-level sentence timestamp sync, and short filler filtering. Replace AutoClip.exe directly."
+            gh release create v1.0.3 AutoClip-v1.0.3-patch.zip --title "AutoClip v1.0.3 Hotfix (OCR Visual Sync)" --notes "Add onscreen English subtitle OCR mode for 100pct frame-accurate sync with English subtitles, update title to v1.0.3. Unzip into existing AutoClip folder and overwrite."
           }
