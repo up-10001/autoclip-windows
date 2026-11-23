@@ -20,10 +20,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies and PyInstaller
+      - name: Install dependencies with onnxruntime-gpu for RTX 3060
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+          pip uninstall -y onnxruntime || true
+          pip install "onnxruntime-gpu>=1.19.0"
 
       - name: Download Windows FFmpeg and Real-ESRGAN binaries
         shell: pwsh
@@ -38,46 +40,37 @@ jobs:
           Remove-Item "bin/tmp" -Recurse -Force
           Remove-Item "bin/ffmpeg.zip" -Force
 
-          New-Item -ItemType Directory -Force -Path bin/realesrgan | Out-Null
-          try {
-            Invoke-WebRequest -Uri "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip" -OutFile "bin/realesrgan.zip"
-            Expand-Archive -Path "bin/realesrgan.zip" -DestinationPath "bin/realesrgan" -Force
-            Remove-Item "bin/realesrgan.zip" -Force
-          } catch {
-            Write-Host "Real-ESRGAN download skipped: $_"
-          }
-
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Package v1.0.4 OCR hot-patch zip (with shapely.libs DLLs)
+      - name: Package v2.0.0 GPU hot-patch zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path patch_pkg/_internal | Out-Null
           Copy-Item "dist/AutoClip/AutoClip.exe" "patch_pkg/AutoClip.exe" -Force
           Get-ChildItem "dist/AutoClip/_internal" -Directory | Where-Object {
-            $_.Name -match "^(rapidocr|cv2|pyclipper|shapely|yaml|PIL)" -or $_.Name -like "*.libs"
+            $_.Name -match "^(rapidocr|cv2|pyclipper|shapely|yaml|PIL|onnxruntime)" -or $_.Name -like "*.libs"
           } | Where-Object {
-            $_.Name -notmatch "^(nvidia|ctranslate2|onnxruntime|av|tokenizers)"
+            $_.Name -notmatch "^(nvidia|ctranslate2|av|tokenizers)"
           } | ForEach-Object {
             Write-Host "Packing dir: $($_.Name)"
             Copy-Item $_.FullName "patch_pkg/_internal/$($_.Name)" -Recurse -Force
           }
           Get-ChildItem "dist/AutoClip/_internal" -File | Where-Object {
-            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six|libgeos|msvcp|vcruntime)"
+            $_.Name -match "^(pyclipper|cv2|_yaml|geos|shapely|six|libgeos|msvcp|vcruntime|onnxruntime)"
           } | ForEach-Object {
             Write-Host "Packing file: $($_.Name)"
             Copy-Item $_.FullName "patch_pkg/_internal/" -Force
           }
-          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v1.0.4-patch.zip" -Force
+          Compress-Archive -Path "patch_pkg/*" -DestinationPath "AutoClip-v2.0.0-GPU-patch.zip" -Force
 
-      - name: Publish v1.0.4 hot-patch Release
+      - name: Publish v2.0.0 GPU Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          if (gh release view v1.0.4 2>$null) {
-            gh release upload v1.0.4 AutoClip-v1.0.4-patch.zip --clobber
+          if (gh release view v2.0.0 2>$null) {
+            gh release upload v2.0.0 AutoClip-v2.0.0-GPU-patch.zip --clobber
           } else {
-            gh release create v1.0.4 AutoClip-v1.0.4-patch.zip --title "AutoClip v1.0.4 Hotfix (Fix OCR shapely DLL)" --notes "Include shapely.libs GEOS DLLs so onscreen English subtitle OCR works out of the box. Unzip into AutoClip folder and replace all."
+            gh release create v2.0.0 AutoClip-v2.0.0-GPU-patch.zip --title "AutoClip v2.0.0 GPU Final Patch" --notes "RTX 3060 GPU OCR acceleration, floating multi-account watermarks, seamless 160px feathered mask, anti-flash subtitle timing, and redesigned Chinese UI."
           }

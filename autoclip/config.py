@@ -1,4 +1,4 @@
-"""配置管理模块：负责读写 config.json（包含 DeepSeek API、字幕样式、去重和输出参数）。"""
+"""配置管理模块：负责读写 config.json（DeepSeek、多账号飘动水印、字幕样式、无痕蒙版与输出参数）。"""
 
 from __future__ import annotations
 
@@ -6,20 +6,18 @@ import json
 import os
 import platform
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 
 def get_app_dir() -> Path:
-    """获取程序所在根目录（兼容 PyInstaller 打包后的 EXE 与源码运行）。"""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
 
 def get_resource_dir() -> Path:
-    """获取内置资源目录（兼容 PyInstaller _MEIPASS）。"""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     return get_app_dir()
@@ -44,56 +42,66 @@ class AppConfig:
 
     # 识别方式：ocr_first（优先识别画面英文字幕，100%对齐原英文字幕时长） / whisper（纯语音识别）
     subtitle_source: str = "ocr_first"
-    # Whisper 语音识别配置
     whisper_model: str = "large-v3-turbo"
     source_language: str = "en"
 
-    # 字幕样式配置（默认精准复刻用户剪辑样本：亮黄大字、粗黑描边阴影、单行居中）
+    # 字幕样式配置（亮黄大字、粗黑描边阴影、单行居中）
     font_name: str = ""
-    font_size: int = 82  # 基准 1080x1440 分辨率下的字号（实测中文字高约 69px，精准匹配样本）
-    font_color: str = "#F4EA46"  # 样本实测亮黄色
+    font_size: int = 82
+    font_color: str = "#F4EA46"
     outline_color: str = "#000000"
     outline_width: float = 4.2
     shadow_depth: float = 3.5
     bold: bool = True
-    position_y_pct: float = 84.0  # 字幕中心距画面顶部的百分比（样本实测 84%）
-    max_chars_per_line: int = 14  # 单行最大汉字数，防止折行
+    position_y_pct: float = 84.0
+    max_chars_per_line: int = 14
     min_chars_per_line: int = 4
 
-    # 去重与蒙版配置
+    # 多账号飘动水印配置
+    # accounts 格式: [{"name": "老张爱看剧", "count": 3}, {"name": "李阿姨追剧", "count": 6}]
+    watermark_enabled: bool = True
+    watermark_floating: bool = True  # 全屏柔和飘动（避开字幕区）
+    watermark_opacity_pct: int = 45  # 透明度 15~85%（默认45%半透明白字）
+    watermark_font_size: int = 42  # 1080x1440 基准下的水印字号（与字幕同字体）
+    watermark_accounts: list[dict[str, Any]] = field(default_factory=list)
+    group_output_by_account: bool = True  # 按账号自动分文件夹导出
+
+    # 去重与无痕羽化蒙版配置
     enable_feathered_mask: bool = True
-    mask_height_pct: float = 30.0  # 顶部 30% 羽化线性蒙版
-    mask_feather_px: int = 72  # 羽化过渡带宽度（像素），消除肉眼可见横缝
-    mask_shift_px: int = 4  # 蒙版区域轻微水平位移
+    mask_height_pct: float = 22.0  # 移至画面上部 22%（避开人脸）+ 160px 超宽羽化，彻底消除切缝感
+    mask_feather_px: int = 160
+    mask_shift_px: int = 12  # 对应手动偏移效果，配合超宽羽化做到肉眼无感
     dedup_level: str = "standard"  # off / light / standard
 
-    # 画质超清增强（替代剪映 SVIP 一键超清）：off / fast（极速高清增强） / ai（Real-ESRGAN 真AI超清）
+    # 画质超清增强：off / fast（极速高清增强） / ai（Real-ESRGAN 真AI超清）
     enhance_mode: str = "fast"
 
     # 音频处理
-    audio_loudnorm: bool = True  # EBU R128 响度均衡 + 防爆音（清晰适合老年人）
+    audio_loudnorm: bool = True
 
     # 输出配置
-    output_format: str = "mp4"  # mp4 / mov
+    output_format: str = "mp4"
     output_fps: int = 60
     video_bitrate_mbps: int = 10
-    output_dir: str = ""  # 为空时默认输出到素材同目录的“已剪辑输出”文件夹
+    output_dir: str = ""
 
     # 批量与工作流配置
-    concurrency_mode: str = "auto"  # auto / 1 / 2 / 3 / 4
-    review_subtitles: bool = False  # 是否在压制前暂停校对字幕
-    keep_srt: bool = False  # 是否顺便保留 .srt 字幕文件
+    concurrency_mode: str = "auto"
+    review_subtitles: bool = False
+    keep_srt: bool = False
+    skip_existing: bool = True  # 已导出过的视频自动跳过，防重复扣费
 
     def __post_init__(self) -> None:
         if not self.font_name:
             self.font_name = get_default_font_name()
+        if not isinstance(self.watermark_accounts, list):
+            self.watermark_accounts = []
 
 
 def get_config_path() -> Path:
     app_dir = get_app_dir()
     candidate = app_dir / "config.json"
     try:
-        # 测试目录是否可写，若不可写则回退到用户目录
         if candidate.exists():
             if os.access(candidate, os.W_OK):
                 return candidate
@@ -129,3 +137,27 @@ def save_config(cfg: AppConfig) -> Path:
         encoding="utf-8",
     )
     return cfg_path
+
+
+def assign_accounts_to_videos(
+    video_count: int,
+    accounts: list[dict[str, Any]],
+    enabled: bool = True,
+) -> list[str]:
+    """按用户设定的账号配额（如 A账号3条、B账号6条、C账号5条）顺序分配给每个视频。"""
+    if not enabled or not accounts or video_count <= 0:
+        return [""] * video_count
+
+    assigned: list[str] = []
+    for acc in accounts:
+        name = str(acc.get("name", "")).strip()
+        try:
+            cnt = max(0, int(acc.get("count", 0)))
+        except Exception:
+            cnt = 0
+        if name and cnt > 0:
+            assigned.extend([name] * cnt)
+
+    if len(assigned) < video_count:
+        assigned.extend([""] * (video_count - len(assigned)))
+    return assigned[:video_count]

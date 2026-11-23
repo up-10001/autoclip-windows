@@ -69,7 +69,7 @@ def _build_system_prompt(max_chars: int, min_chars: int, strict_visual_sync: boo
             "【翻译与排版规范】\n"
             "1. 【自动修正 OCR 小错字】输入的英文由画面 OCR 提取，若偶有拼写粘连或个别字母误识（如 Lookatherleg -> Look at her leg），请结合上下文自动理解正确意思再翻译。\n"
             "2. 【单行呈现】每条 zh 必须是一行纯中文，严禁换行符。\n"
-            f"3. 【长度精炼均匀】尽量控制在 {min_chars} 到 {max_chars} 个汉字之间，语言凝练地道，适合中国中老年观众阅读；句末不要加句号“。”，问号和感叹号保留。\n"
+            f"3. 【长度精炼、断句自然】尽量控制在 {min_chars} 到 {max_chars} 个汉字之间，语言地道通顺；如果一条英文里包含两句短对话，中间请自然加逗号或问号隔开（例如“手机给我，我爱你”），句末不要加句号“。”。\n"
             "4. 【按 id 顺序递增】只输出合法 JSON 对象：\n"
             '{"items": [{"ids": [1], "zh": "我来拿"}, {"ids": [2], "zh": "给你妈打电话"}]}'
         )
@@ -322,7 +322,7 @@ def normalize_subtitles(
                 continue
         merged.append(it)
 
-    # 2. 消除重叠并平滑衔接（间隔 <= 0.20s 直接衔接，避免闪烁）
+    # 2. 消除重叠、平滑衔接，并对极短字幕做柔和防“一闪而过”微延（绝不撞到下一句）
     final_items: list[SubtitleItem] = []
     for it in merged:
         if final_items:
@@ -336,9 +336,20 @@ def normalize_subtitles(
                     it.start = prev.end
                     if it.end <= it.start + 0.2:
                         it.end = it.start + 0.35
-            elif 0.0 < (it.start - prev.end) <= 0.20:
+            elif 0.0 < (it.start - prev.end) <= 0.25:
                 prev.end = it.start
         final_items.append(it)
+
+    # 3. 防“一闪而过”微调：若某条停留时间不足 0.95 秒，且后面有空隙，柔和延长最多 0.30 秒
+    for i, it in enumerate(final_items):
+        dur = it.end - it.start
+        next_start = final_items[i + 1].start if i + 1 < len(final_items) else (it.end + 1.0)
+        if dur < 0.95:
+            desired_end = min(it.start + 0.95, it.end + 0.30)
+            it.end = max(it.end, min(desired_end, next_start - 0.02))
+        elif (next_start - it.end) > 0.30:
+            # 正常句子也加极柔和的 0.12s 尾帧缓冲，视觉更稳不突兀
+            it.end = min(it.end + 0.12, next_start - 0.05)
 
     for idx, it in enumerate(final_items, start=1):
         it.index = idx

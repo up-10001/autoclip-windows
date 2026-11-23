@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .asr import get_whisper_engine
-from .config import AppConfig
+from .config import AppConfig, assign_accounts_to_videos
 from .hardware import HardwareProfile
 from .ocr_sub import extract_onscreen_english_subtitles
 from .renderer import render_video
@@ -20,20 +21,35 @@ from .translator import SubtitleItem, translate_segments
 @dataclass
 class TaskStatus:
     video_path: Path
-    state: str  # 等待中 / 语音识别 / DeepSeek翻译 / 等待校对 / 渲染导出 / 已完成 / 失败
+    state: str
     progress: float = 0.0
     message: str = ""
     output_path: Optional[Path] = None
+    account_name: str = ""
 
 
-def resolve_output_path(video_path: Path, cfg: AppConfig) -> Path:
+def _safe_folder_name(name: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
+    return cleaned or "默认账号"
+
+
+def resolve_output_path(video_path: Path, cfg: AppConfig, account_name: str = "") -> Path:
     ext = "mov" if cfg.output_format.lower() == "mov" else "mp4"
     if cfg.output_dir.strip():
-        out_dir = Path(cfg.output_dir.strip())
+        base_dir = Path(cfg.output_dir.strip())
     else:
-        out_dir = video_path.parent / "已剪辑输出"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f"{video_path.stem}_已剪辑.{ext}"
+        base_dir = video_path.parent / "已剪辑输出"
+
+    acc = account_name.strip()
+    if acc and cfg.group_output_by_account:
+        safe_acc = _safe_folder_name(acc)
+        out_dir = base_dir / safe_acc
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / f"{safe_acc}_{video_path.stem}.{ext}"
+
+    base_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{_safe_folder_name(acc)}_" if acc else ""
+    return base_dir / f"{prefix}{video_path.stem}_已剪辑.{ext}"
 
 
 class BatchPipeline:
@@ -73,6 +89,7 @@ class BatchPipeline:
         progress: float,
         message: str = "",
         output_path: Optional[Path] = None,
+        account_name: str = "",
     ) -> None:
         if self.status_cb:
             self.status_cb(
@@ -82,6 +99,7 @@ class BatchPipeline:
                     progress=progress,
                     message=message,
                     output_path=output_path,
+                    account_name=account_name,
                 )
             )
 
@@ -106,38 +124,45 @@ class BatchPipeline:
             n = 1
         return n, n, max(n, 2)
 
-    def process_single(self, video_path: Path) -> TaskStatus:
+    def process_single(self, video_path: Path, account_name: str = "") -> TaskStatus:
         name = video_path.name
         if self._cancel_event.is_set():
-            st = TaskStatus(video_path, "已取消", 0.0, "任务已取消")
-            self._emit(video_path, st.state, st.progress, st.message)
+            st = TaskStatus(video_path, "已取消", 0.0, "任务已取消", account_name=account_name)
+            self._emit(video_path, st.state, st.progress, st.message, account_name=account_name)
             return st
 
         try:
+            out_path = resolve_output_path(video_path, self.cfg, account_name=account_name)
+            if self.cfg.skip_existing and out_path.is_file() and out_path.stat().st_size > 100_000:
+                self._log(f"[{name}] 已存在成品，自动跳过：{out_path.name}")
+                st = TaskStatus(video_path, "已跳过", 1.0, f"已有成品：{out_path.name}", out_path, account_name)
+                self._emit(video_path, st.state, st.progress, st.message, st.output_path, account_name)
+                return st
+
             # 阶段 1：优先扫描画面英文字幕（100%对齐英文字幕出现与消失时长），若无硬字幕则自动回退 Whisper 语音识别
             raw_segments = []
             used_ocr = False
             if (self.cfg.subtitle_source or "ocr_first") == "ocr_first":
-                self._emit(video_path, "识别英文字幕", 0.02, "正在扫描画面英文字幕时间轴...")
+                self._emit(video_path, "识别字幕", 0.02, "正在扫描画面英文字幕...", account_name=account_name)
                 try:
                     raw_segments = extract_onscreen_english_subtitles(
                         video_path,
                         log_cb=lambda m: self._log(f"[{name}] {m}"),
                         progress_cb=lambda p: self._emit(
-                            video_path, "识别英文字幕", 0.02 + p * 0.33, "正在对齐画面英文字幕..."
+                            video_path, "识别字幕", 0.02 + p * 0.33, "正在对齐画面英文字幕...", account_name=account_name
                         ),
                     )
                     if len(raw_segments) >= 3:
                         used_ocr = True
                     else:
-                        self._log(f"[{name}] 画面未检测到足够英文字幕（仅 {len(raw_segments)} 条），自动切换至 Whisper 语音识别...")
+                        self._log(f"[{name}] 画面未检测到足够英文字幕，自动切换至语音识别...")
                         raw_segments = []
                 except Exception as ocr_err:
-                    self._log(f"[{name}] 画面字幕识别跳过（{ocr_err}），自动切换至 Whisper 语音识别...")
+                    self._log(f"[{name}] 画面字幕识别跳过（{ocr_err}），自动切换至语音识别...")
                     raw_segments = []
 
             if not used_ocr:
-                self._emit(video_path, "语音识别", 0.02, "准备识别英文语音...")
+                self._emit(video_path, "语音识别", 0.02, "准备识别英文语音...", account_name=account_name)
                 engine = get_whisper_engine()
                 raw_segments = engine.transcribe(
                     video_path,
@@ -145,7 +170,7 @@ class BatchPipeline:
                     self.hw,
                     log_cb=lambda m: self._log(f"[{name}] {m}"),
                     progress_cb=lambda p: self._emit(
-                        video_path, "语音识别", 0.02 + p * 0.33, "正在识别语音..."
+                        video_path, "语音识别", 0.02 + p * 0.33, "正在识别语音...", account_name=account_name
                     ),
                 )
             if self._cancel_event.is_set():
@@ -155,7 +180,7 @@ class BatchPipeline:
                 raise RuntimeError("未识别到有效英文对白或字幕，请检查原视频。")
 
             # 阶段 2：DeepSeek 翻译与语义断句（35% -> 60%）
-            self._emit(video_path, "DeepSeek翻译", 0.36, "正在翻译并整理单行字幕...")
+            self._emit(video_path, "翻译中", 0.36, "正在翻译成通俗中文...", account_name=account_name)
             assert self._translate_sem is not None
             with self._translate_sem:
                 subtitles = translate_segments(
@@ -163,28 +188,27 @@ class BatchPipeline:
                     self.cfg,
                     log_cb=lambda m: self._log(f"[{name}] {m}"),
                     progress_cb=lambda p: self._emit(
-                        video_path, "DeepSeek翻译", 0.36 + p * 0.24, "DeepSeek 翻译中..."
+                        video_path, "翻译中", 0.36 + p * 0.24, "DeepSeek 翻译中...", account_name=account_name
                     ),
                     strict_visual_sync=used_ocr,
                 )
             if self._cancel_event.is_set():
                 raise InterruptedError("用户取消任务")
 
-            # 可选阶段：人工校对字幕
             if self.cfg.review_subtitles and self.review_cb is not None:
-                self._emit(video_path, "等待校对", 0.60, "请在弹窗中确认或微调字幕...")
+                self._emit(video_path, "等待校对", 0.60, "请在弹窗中确认或微调字幕...", account_name=account_name)
                 edited = self.review_cb(video_path, subtitles)
                 if edited is None:
                     raise InterruptedError("校对已取消")
                 subtitles = edited
 
-            out_path = resolve_output_path(video_path, self.cfg)
             if self.cfg.keep_srt:
                 srt_path = out_path.with_suffix(".srt")
                 write_srt_subtitle(subtitles, srt_path)
 
-            # 阶段 3：蒙版去重 + 字幕压制（60% -> 100%）
-            self._emit(video_path, "渲染导出", 0.62, "等待显卡渲染队列...")
+            # 阶段 3：无痕蒙版去重 + 字幕与飘动水印压制（60% -> 100%）
+            wm_tip = f"（水印：{account_name}）" if account_name else ""
+            self._emit(video_path, "导出成片", 0.62, f"等待显卡导出{wm_tip}...", account_name=account_name)
             assert self._render_sem is not None
             with self._render_sem:
                 if self._cancel_event.is_set():
@@ -197,22 +221,23 @@ class BatchPipeline:
                     self.hw,
                     log_cb=lambda m: self._log(f"[{name}] {m}"),
                     progress_cb=lambda p: self._emit(
-                        video_path, "渲染导出", 0.62 + p * 0.38, "正在压制成片..."
+                        video_path, "导出成片", 0.62 + p * 0.38, f"正在压制成片{wm_tip}...", account_name=account_name
                     ),
+                    watermark_text=account_name,
                 )
 
-            st = TaskStatus(video_path, "已完成", 1.0, f"输出：{out_path.name}", out_path)
-            self._emit(video_path, st.state, st.progress, st.message, st.output_path)
+            st = TaskStatus(video_path, "已完成", 1.0, f"已保存：{out_path.name}", out_path, account_name)
+            self._emit(video_path, st.state, st.progress, st.message, st.output_path, account_name)
             return st
 
         except InterruptedError:
-            st = TaskStatus(video_path, "已取消", 0.0, "已停止")
-            self._emit(video_path, st.state, st.progress, st.message)
+            st = TaskStatus(video_path, "已取消", 0.0, "已停止", account_name=account_name)
+            self._emit(video_path, st.state, st.progress, st.message, account_name=account_name)
             return st
         except Exception as e:
             self._log(f"[{name}] 处理失败：{e}")
-            st = TaskStatus(video_path, "失败", 0.0, str(e))
-            self._emit(video_path, st.state, st.progress, st.message)
+            st = TaskStatus(video_path, "失败", 0.0, str(e), account_name=account_name)
+            self._emit(video_path, st.state, st.progress, st.message, account_name=account_name)
             return st
 
     def run_batch(self, video_paths: list[Path]) -> list[TaskStatus]:
@@ -220,26 +245,33 @@ class BatchPipeline:
         self._render_sem = threading.Semaphore(render_w)
         self._translate_sem = threading.Semaphore(trans_w)
 
-        mode_desc = (
-            f"并行模式（总流水线 {total_w} 路，压制 {render_w} 路，翻译 {trans_w} 路）"
-            if total_w > 1
-            else "顺序模式（单路稳定执行）"
+        assigned_accounts = assign_accounts_to_videos(
+            len(video_paths),
+            self.cfg.watermark_accounts,
+            enabled=self.cfg.watermark_enabled,
         )
-        self._log(f"开始批量剪辑，共 {len(video_paths)} 个视频 | 调度策略：{mode_desc}")
 
-        for vp in video_paths:
-            self._emit(vp, "等待中", 0.0, "排队中...")
+        mode_desc = (
+            f"显卡并行加速（同时压制 {render_w} 路）"
+            if total_w > 1
+            else "单路顺序剪辑"
+        )
+        self._log(f"开始批量剪辑，共 {len(video_paths)} 个视频 | 模式：{mode_desc}")
+
+        pairs = list(zip(video_paths, assigned_accounts))
+        for vp, acc in pairs:
+            self._emit(vp, "等待中", 0.0, "排队中...", account_name=acc)
 
         results: list[TaskStatus] = []
-        if total_w <= 1 or len(video_paths) == 1:
-            for vp in video_paths:
+        if total_w <= 1 or len(pairs) == 1:
+            for vp, acc in pairs:
                 if self._cancel_event.is_set():
                     break
-                results.append(self.process_single(vp))
+                results.append(self.process_single(vp, account_name=acc))
             return results
 
         with ThreadPoolExecutor(max_workers=total_w) as pool:
-            fut_map = {pool.submit(self.process_single, vp): vp for vp in video_paths}
+            fut_map = {pool.submit(self.process_single, vp, acc): vp for vp, acc in pairs}
             for fut in as_completed(fut_map):
                 results.append(fut.result())
         return results

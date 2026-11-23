@@ -299,15 +299,24 @@ def render_video(
     hw: HardwareProfile,
     log_cb: Optional[Callable[[str], None]] = None,
     progress_cb: Optional[Callable[[float], None]] = None,
+    watermark_text: str = "",
 ) -> Path:
-    """执行蒙版去重、字幕烧录、音频均衡与视频压制。"""
+    """执行无痕羽化蒙版去重、字幕与飘动水印烧录、音频均衡与视频压制。"""
     ffmpeg = find_ffmpeg_binary("ffmpeg")
     info = probe_video(input_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="autoclip_render_") as tmp_str:
         tmp_dir = Path(tmp_str)
-        ass_path = write_ass_subtitle(subtitles, tmp_dir / "sub.ass", info.width, info.height, cfg)
+        ass_path = write_ass_subtitle(
+            subtitles,
+            tmp_dir / "sub.ass",
+            info.width,
+            info.height,
+            cfg,
+            watermark_text=watermark_text,
+            video_duration=info.duration,
+        )
 
         # 0. 可选真·AI 超清（Real-ESRGAN 逐帧重绘，未安装组件时自动回退至极速高清增强）
         effective_input = input_path
@@ -468,7 +477,14 @@ def render_video(
                     log_cb("NVENC 编码失败，自动切换 CPU (libx264) 重试...")
                 fallback_hw = HardwareProfile(**{**hw.__dict__, "recommended_video_encoder": "libx264"})
                 return render_video(
-                    input_path, output_path, subtitles, cfg, fallback_hw, log_cb=log_cb, progress_cb=progress_cb
+                    input_path,
+                    output_path,
+                    subtitles,
+                    cfg,
+                    fallback_hw,
+                    log_cb=log_cb,
+                    progress_cb=progress_cb,
+                    watermark_text=watermark_text,
                 )
             raise RuntimeError("FFmpeg 渲染失败：\n" + "\n".join(stderr_tail[-10:]))
 
@@ -484,8 +500,9 @@ def render_preview_frame(
     cfg: AppConfig,
     sample_text: str = "你怎么知道这件事的？",
     timestamp_sec: float = 5.0,
+    watermark_text: str = "",
 ) -> Path:
-    """渲染单帧预览图（带实际字幕样式），供 GUI 实时预览排版与安全区。"""
+    """渲染单帧预览图（带实际字幕与半透明水印样式），供 GUI 实时预览排版与安全区。"""
     ffmpeg = find_ffmpeg_binary("ffmpeg")
     info = probe_video(video_path)
     t = min(timestamp_sec, max(0.5, info.duration * 0.15))
@@ -495,7 +512,15 @@ def render_preview_frame(
     out_img = tmp_dir / "preview.jpg"
 
     sample_sub = [SubtitleItem(index=1, start=0.0, end=10.0, text=sample_text)]
-    write_ass_subtitle(sample_sub, tmp_dir / "sub.ass", info.width, info.height, cfg)
+    write_ass_subtitle(
+        sample_sub,
+        tmp_dir / "sub.ass",
+        info.width,
+        info.height,
+        cfg,
+        watermark_text=watermark_text,
+        video_duration=10.0,
+    )
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     cmd = [
