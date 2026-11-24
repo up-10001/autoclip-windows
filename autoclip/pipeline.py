@@ -153,13 +153,15 @@ class BatchPipeline:
                 self._emit(video_path, st.state, st.progress, st.message, st.output_path, account_name)
                 return st
 
-            # 阶段 1：优先扫描画面英文字幕（100%对齐英文字幕出现与消失时长），若无硬字幕则自动回退 Whisper 语音识别
+            # 阶段 1：优先扫描画面英文字幕（100%对齐英文字幕出现与消失时长，并自动测量英文字幕高度位置）
             raw_segments = []
+            en_top_pct: Optional[float] = None
+            en_bottom_pct: Optional[float] = None
             used_ocr = False
             if (self.cfg.subtitle_source or "ocr_first") == "ocr_first":
                 self._emit(video_path, "识别字幕", 0.02, "正在扫描画面英文字幕...", account_name=account_name)
                 try:
-                    raw_segments = extract_onscreen_english_subtitles(
+                    raw_segments, en_top_pct, en_bottom_pct = extract_onscreen_english_subtitles(
                         video_path,
                         log_cb=lambda m: self._log(f"[{name}] {m}"),
                         progress_cb=lambda p: self._emit(
@@ -253,6 +255,8 @@ class BatchPipeline:
                     ),
                     watermark_text=account_name,
                     cancel_event=self._cancel_event,
+                    en_top_pct=en_top_pct,
+                    en_bottom_pct=en_bottom_pct,
                 )
 
             elapsed = int(round(time.time() - t0))

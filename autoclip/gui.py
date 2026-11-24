@@ -169,6 +169,7 @@ class AdvancedSettingsDialog(tk.Toplevel):
         self.var_quality = tk.StringVar(value=_code_to_label(QUALITY_OPTIONS, cfg.video_bitrate_mbps))
         self.var_fps = tk.StringVar(value=_code_to_label(FPS_OPTIONS, cfg.output_fps))
         self.var_dedup = tk.BooleanVar(value=(cfg.dedup_level != "off"))
+        self.var_auto_pos = tk.BooleanVar(value=cfg.auto_position_below_en)
         self.var_loudnorm = tk.BooleanVar(value=cfg.audio_loudnorm)
         self.var_skip = tk.BooleanVar(value=cfg.skip_existing)
         self.var_srt = tk.BooleanVar(value=cfg.keep_srt)
@@ -232,6 +233,8 @@ class AdvancedSettingsDialog(tk.Toplevel):
         ttk.Separator(body).grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=10)
 
         r += 1
+        ttk.Checkbutton(body, text="中文字幕自动紧贴原英文字幕正下方（自动预留单/双行间距不重叠）", variable=self.var_auto_pos, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
+        r += 1
         ttk.Checkbutton(body, text="开启隐形防搬运去重（微缩放 + 微调色 + 清除原属性）", variable=self.var_dedup, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
         r += 1
         ttk.Checkbutton(body, text="音量自动放大均衡（清晰不刺耳，适合中老年人）", variable=self.var_loudnorm, style="Card.TCheckbutton").grid(row=r, column=0, columnspan=4, sticky=tk.W, pady=3)
@@ -259,6 +262,7 @@ class AdvancedSettingsDialog(tk.Toplevel):
         cfg.video_bitrate_mbps = int(_label_to_code(QUALITY_OPTIONS, self.var_quality.get()))
         cfg.output_fps = int(_label_to_code(FPS_OPTIONS, self.var_fps.get()))
         cfg.dedup_level = "standard" if self.var_dedup.get() else "off"
+        cfg.auto_position_below_en = self.var_auto_pos.get()
         cfg.audio_loudnorm = self.var_loudnorm.get()
         cfg.skip_existing = self.var_skip.get()
         cfg.keep_srt = self.var_srt.get()

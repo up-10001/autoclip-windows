@@ -53,6 +53,7 @@ class AppConfig:
     outline_width: float = 4.2
     shadow_depth: float = 3.5
     bold: bool = True
+    auto_position_below_en: bool = True  # 自动紧贴画面原英文字幕正下方（预留单/双行间距不重叠）
     position_y_pct: float = 84.0
     max_chars_per_line: int = 14
     min_chars_per_line: int = 4

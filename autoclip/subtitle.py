@@ -62,6 +62,7 @@ def _build_floating_watermark_events(
     duration: float,
     wm_font_size: int,
     floating: bool,
+    max_y_pct: float = 54.0,
 ) -> list[str]:
     """生成半透明白色飘动水印 ASS 事件（Layer 1，位于字幕区上方柔和漂移）。"""
     txt = _escape_ass_text(wm_text)
@@ -73,9 +74,9 @@ def _build_floating_watermark_events(
     margin_x = min(video_width // 3, half_w + int(video_width * 0.04))
     min_x = margin_x
     max_x = max(min_x + 10, video_width - margin_x)
-    # 垂直飘动范围：顶部 8% ~ 中部 54%（完全避开 58% 以下的中英文字幕区）
+    # 垂直飘动范围：顶部 8% ~ max_y_pct（自动避开原英文字幕与底部中文字幕）
     min_y = int(video_height * 0.08)
-    max_y = int(video_height * 0.54)
+    max_y = int(video_height * max(16.0, min(54.0, max_y_pct)) / 100.0)
 
     if not floating:
         rx = max_x
@@ -130,8 +131,10 @@ def write_ass_subtitle(
     cfg: AppConfig,
     watermark_text: str = "",
     video_duration: float = 0.0,
+    en_top_pct: float | None = None,
+    en_bottom_pct: float | None = None,
 ) -> Path:
-    """生成精准匹配原成片视觉风格的 ASS 字幕文件（含可选同字体半透明飘动水印）。"""
+    """生成精准匹配原成片视觉风格的 ASS 字幕文件（含可选同字体半透明飘动水印与自动紧贴原英文位置）。"""
     scale = video_height / 1440.0
     font_size = max(24, int(round(cfg.font_size * scale)))
     outline = round(max(1.5, cfg.outline_width * scale), 2)
@@ -151,8 +154,19 @@ def write_ass_subtitle(
     wm_outline = hex_to_ass_color("#000000", alpha=wm_outline_alpha)
     wm_back = hex_to_ass_color("#000000", alpha=min(250, wm_alpha + 85))
 
+    # 智能位置：若检测到原英文字幕底部位置且开启自动跟随，则紧贴原英文字幕正下方并预留单/双行呼吸间距（绝不重叠）
+    effective_y_pct = cfg.position_y_pct
+    if cfg.auto_position_below_en and en_bottom_pct is not None:
+        font_h_pct = (font_size / max(video_height, 1)) * 100.0
+        # 底部(已兼容双行 p88) + 半个中文字高 + 2.6% 安全呼吸空隙
+        effective_y_pct = max(55.0, min(88.0, en_bottom_pct + font_h_pct * 0.55 + 2.6))
+
+    wm_max_y_pct = 54.0
+    if en_top_pct is not None:
+        wm_max_y_pct = max(18.0, min(54.0, en_top_pct - 7.0))
+
     cx = int(round(video_width / 2.0))
-    cy = int(round(video_height * (cfg.position_y_pct / 100.0)))
+    cy = int(round(video_height * (effective_y_pct / 100.0)))
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -201,6 +215,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 max(10.0, max_end),
                 wm_font_size,
                 cfg.watermark_floating,
+                max_y_pct=wm_max_y_pct,
             )
         )
 

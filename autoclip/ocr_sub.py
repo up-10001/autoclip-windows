@@ -183,7 +183,7 @@ def extract_onscreen_english_subtitles(
     progress_cb: Optional[Callable[[float], None]] = None,
     sample_fps: float = 2.5,
     cancel_event: Optional[threading.Event] = None,
-) -> list[RawSegment]:
+) -> tuple[list[RawSegment], Optional[float], Optional[float]]:
     """极速扫描画面英文字幕区（DirectML GPU + NVDEC 硬件解码）。"""
     ocr, backend = _get_ocr(log_cb=log_cb)
     ffmpeg = find_ffmpeg_binary("ffmpeg")
@@ -228,6 +228,9 @@ def extract_onscreen_english_subtitles(
         first_buf = proc.stdout.read(frame_bytes)
 
     frame_texts: list[tuple[float, str]] = []
+    # 记录每帧检测到的英文字幕在原视频中的顶部/底部位置百分比（用于自动将中文字幕紧贴原英文正下方）
+    en_top_pcts: list[float] = []
+    en_bottom_pcts: list[float] = []
     prev_dil_mask: Optional[np.ndarray] = None
     prev_text: str = ""
     frame_idx = 0
@@ -272,7 +275,7 @@ def extract_onscreen_english_subtitles(
                             raise InterruptedError("用户已停止任务")
                         res, _ = ocr(rgb)
                     ocr_calls += 1
-                    kept_lines: list[tuple[float, str]] = []
+                    kept_lines: list[tuple[float, float, float, str]] = []
                     if res:
                         for item in res:
                             box, txt, score = item[0], str(item[1]), float(item[2])
@@ -282,10 +285,19 @@ def extract_onscreen_english_subtitles(
                                 continue
                             cleaned = _clean_ocr_english(txt)
                             if cleaned:
-                                y_center = sum(p[1] for p in box) / 4.0
-                                kept_lines.append((y_center, cleaned))
+                                ys_box = [p[1] for p in box]
+                                y_min_b = min(ys_box)
+                                y_max_b = max(ys_box)
+                                y_center = (y_min_b + y_max_b) / 2.0
+                                kept_lines.append((y_center, y_min_b, y_max_b, cleaned))
                     kept_lines.sort(key=lambda x: x[0])
-                    cur_text = " ".join(x[1] for x in kept_lines).strip()
+                    cur_text = " ".join(x[3] for x in kept_lines).strip()
+                    if kept_lines:
+                        # 换算回原视频完整高度的百分比（0~100）
+                        band_top_y = min(x[1] for x in kept_lines) / max(scale_h, 1) * bh + y0
+                        band_bot_y = max(x[2] for x in kept_lines) / max(scale_h, 1) * bh + y0
+                        en_top_pcts.append(band_top_y / max(info.height, 1) * 100.0)
+                        en_bottom_pcts.append(band_bot_y / max(info.height, 1) * 100.0)
                     prev_dil_mask = dil_mask
                     prev_text = cur_text
 
@@ -332,11 +344,24 @@ def extract_onscreen_english_subtitles(
             )
         )
 
+    # 计算原英文字幕的稳定纵向范围（取中位数剔除偶发片头杂字，底部取 p88 兼容双行英文字幕）
+    en_top_pct: Optional[float] = None
+    en_bottom_pct: Optional[float] = None
+    if len(en_bottom_pcts) >= 3:
+        med_bot = float(np.median(en_bottom_pcts))
+        # 过滤偏离主字幕行超过 12% 的偶发片头/演职员表坐标
+        valid_bots = [b for b in en_bottom_pcts if abs(b - med_bot) <= 12.0]
+        valid_tops = [tp for tp, b in zip(en_top_pcts, en_bottom_pcts) if abs(b - med_bot) <= 12.0]
+        if valid_bots:
+            en_bottom_pct = round(float(np.percentile(valid_bots, 88)), 2)
+            en_top_pct = round(float(np.percentile(valid_tops, 15)), 2)
+
     if progress_cb:
         progress_cb(1.0)
     if log_cb:
+        pos_info = f"，原英文字幕底部位置约 {en_bottom_pct:.1f}%" if en_bottom_pct is not None else ""
         log_cb(
             f"画面英文字幕扫描完成（总帧 {frame_idx}，实际识别 {ocr_calls} 次），"
-            f"精准锁定 {len(segments)} 条英文字幕。"
+            f"精准锁定 {len(segments)} 条英文字幕{pos_info}。"
         )
-    return segments
+    return segments, en_top_pct, en_bottom_pct

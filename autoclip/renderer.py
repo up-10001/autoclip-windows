@@ -310,6 +310,8 @@ def render_video(
     progress_cb: Optional[Callable[[float], None]] = None,
     watermark_text: str = "",
     cancel_event=None,
+    en_top_pct: Optional[float] = None,
+    en_bottom_pct: Optional[float] = None,
 ) -> Path:
     """执行无痕羽化蒙版去重、字幕与飘动水印烧录、音频均衡与视频压制。"""
     ffmpeg = find_ffmpeg_binary("ffmpeg")
@@ -326,6 +328,8 @@ def render_video(
             cfg,
             watermark_text=watermark_text,
             video_duration=info.duration,
+            en_top_pct=en_top_pct,
+            en_bottom_pct=en_bottom_pct,
         )
 
         # 0. 可选真·AI 超清（Real-ESRGAN 逐帧重绘，未安装组件时自动回退至极速高清增强）
@@ -526,6 +530,8 @@ def render_video(
                     progress_cb=progress_cb,
                     watermark_text=watermark_text,
                     cancel_event=cancel_event,
+                    en_top_pct=en_top_pct,
+                    en_bottom_pct=en_bottom_pct,
                 )
             raise RuntimeError("FFmpeg 渲染失败：\n" + "\n".join(stderr_tail[-10:]))
 
