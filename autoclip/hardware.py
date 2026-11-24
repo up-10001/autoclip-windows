@@ -114,6 +114,8 @@ def _detect_nvidia_gpu() -> tuple[str, float]:
         out = subprocess.check_output(
             [smi, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             creationflags=creationflags,
         ).strip()
@@ -134,6 +136,8 @@ def _detect_ffmpeg_encoders(ffmpeg_path: str) -> set[str]:
         out = subprocess.check_output(
             [ffmpeg_path, "-hide_banner", "-encoders"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stderr=subprocess.DEVNULL,
             timeout=5,
             creationflags=creationflags,

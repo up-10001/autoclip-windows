@@ -35,6 +35,13 @@ def _safe_folder_name(name: str) -> str:
     return cleaned or "默认账号"
 
 
+def _safe_stem(stem: str, max_len: int = 80) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n]+', "_", stem).strip(" .")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip(" .")
+    return cleaned or "video"
+
+
 def resolve_output_path(video_path: Path, cfg: AppConfig, account_name: str = "") -> Path:
     ext = "mov" if cfg.output_format.lower() == "mov" else "mp4"
     if cfg.output_dir.strip():
@@ -42,16 +49,17 @@ def resolve_output_path(video_path: Path, cfg: AppConfig, account_name: str = ""
     else:
         base_dir = video_path.parent / "已剪辑输出"
 
+    safe_v = _safe_stem(video_path.stem)
     acc = account_name.strip()
     if acc and cfg.group_output_by_account:
         safe_acc = _safe_folder_name(acc)
         out_dir = base_dir / safe_acc
         out_dir.mkdir(parents=True, exist_ok=True)
-        return out_dir / f"{safe_acc}_{video_path.stem}.{ext}"
+        return out_dir / f"{safe_acc}_{safe_v}.{ext}"
 
     base_dir.mkdir(parents=True, exist_ok=True)
     prefix = f"{_safe_folder_name(acc)}_" if acc else ""
-    return base_dir / f"{prefix}{video_path.stem}_已剪辑.{ext}"
+    return base_dir / f"{prefix}{safe_v}_已剪辑.{ext}"
 
 
 class BatchPipeline:

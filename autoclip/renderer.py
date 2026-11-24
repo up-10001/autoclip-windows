@@ -44,7 +44,13 @@ def probe_video(video_path: Path) -> VideoInfo:
         "-show_streams",
         str(video_path),
     ]
-    out = subprocess.check_output(cmd, text=True, creationflags=creationflags)
+    out = subprocess.check_output(
+        cmd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=creationflags,
+    )
     data = json.loads(out)
 
     v_stream = None
@@ -200,6 +206,8 @@ def _run_ai_super_resolution(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
     )
     if res.returncode != 0 or not any(frames_out.glob("*.jpg")):
