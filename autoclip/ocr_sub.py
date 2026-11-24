@@ -189,14 +189,15 @@ def extract_onscreen_english_subtitles(
     ffmpeg = find_ffmpeg_binary("ffmpeg")
     info = probe_video(video_path)
 
-    y0 = int(info.height * 0.58)
-    y1 = int(info.height * 0.79)
-    x0 = int(info.width * 0.05)
-    x1 = int(info.width * 0.95)
+    # 扩大扫描区间至 42%..84%：同时覆盖 9:16 居中英文字幕(46%-56%)、3:4 偏下字幕(64%-75%)与横屏底部字幕(75%-84%)
+    y0 = int(info.height * 0.42)
+    y1 = int(info.height * 0.84)
+    x0 = int(info.width * 0.04)
+    x1 = int(info.width * 0.96)
     bw = (x1 - x0) - ((x1 - x0) % 2)
     bh = (y1 - y0) - ((y1 - y0) % 2)
 
-    scale_w = min(bw, 480)
+    scale_w = min(bw, 640)
     scale_w -= scale_w % 2
     scale_h = int(round(bh * (scale_w / bw)))
     scale_h -= scale_h % 2

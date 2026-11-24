@@ -167,10 +167,20 @@ class BatchPipeline:
                         ),
                         cancel_event=self._cancel_event,
                     )
-                    if len(raw_segments) >= 3:
+                    # 安全兜底：至少识别出一定数量（如长视频至少 8 条），防止只误识到片头演职员表导致整片无字幕
+                    min_expected = 5
+                    try:
+                        from .renderer import probe_video as _pv
+                        _dur = _pv(video_path).duration
+                        min_expected = max(4, min(12, int(_dur / 25.0)))
+                    except Exception:
+                        pass
+                    if len(raw_segments) >= min_expected:
                         used_ocr = True
                     else:
-                        self._log(f"[{name}] 画面未检测到足够英文字幕，自动切换至语音识别...")
+                        self._log(
+                            f"[{name}] 画面仅检测到 {len(raw_segments)} 条英文字幕（低于预期 {min_expected} 条），自动切换至语音识别..."
+                        )
                         raw_segments = []
                 except InterruptedError:
                     raise

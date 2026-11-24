@@ -43,14 +43,14 @@ jobs:
       - name: Build AutoClip.exe
         run: pyinstaller --noconfirm --clean AutoClip.spec
 
-      - name: Publish v3.0.2 Pro EXE hotfix (~10MB)
+      - name: Publish v3.0.3 Pro EXE hotfix (~10MB)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v3.0.2.exe" -Force
-          if (gh release view v3.0.2 2>$null) {
-            gh release upload v3.0.2 AutoClip-v3.0.2.exe --clobber
+          Copy-Item "dist/AutoClip/AutoClip.exe" "AutoClip-v3.0.3.exe" -Force
+          if (gh release view v3.0.3 2>$null) {
+            gh release upload v3.0.3 AutoClip-v3.0.3.exe --clobber
           } else {
-            gh release create v3.0.2 AutoClip-v3.0.2.exe --title "AutoClip Pro v3.0.2 Hotfix (Fix GBK UTF-8 Emoji/TikTok Crash)" --notes "Fix ffprobe UTF-8 decoding crash on Chinese Windows when TikTok videos contain emoji/UTF-8 metadata, and cap long filenames cleanly. Replace AutoClip.exe directly."
+            gh release create v3.0.3 AutoClip-v3.0.3.exe --title "AutoClip Pro v3.0.3 Hotfix (Support 9:16 Mid-Screen Subtitles)" --notes "Expand OCR scan band to 42pct-84pct to cover 9:16 mid-screen English subtitles, increase OCR width to 640px for small fonts, and add min-count Whisper fallback. Replace AutoClip.exe directly."
           }
