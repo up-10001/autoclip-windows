@@ -542,16 +542,19 @@ class AutoClipApp(tk.Tk):
             command=lambda: AdvancedSettingsDialog(self),
         ).pack(side=tk.LEFT)
 
-        # 2. 主内容区（左右分栏）
+        # 2. 主内容区（grid 固定右栏 410px，彻底杜绝超长日志/文件名把右侧工具栏挤出或导致疯狂闪烁！）
         content = ttk.Frame(self, style="App.TFrame", padding=12)
         content.pack(fill=tk.BOTH, expand=True)
+        content.columnconfigure(0, weight=1, minsize=620)
+        content.columnconfigure(1, weight=0, minsize=410)
+        content.rowconfigure(0, weight=1)
 
         left_col = ttk.Frame(content, style="App.TFrame")
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        left_col.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 10))
 
         right_col = ttk.Frame(content, style="App.TFrame", width=410)
-        right_col.pack(side=tk.RIGHT, fill=tk.Y)
-        right_col.pack_propagate(False)
+        right_col.grid(row=0, column=1, sticky=tk.NSEW)
+        right_col.grid_propagate(False)
 
         # ========== 左侧：素材列表 + 手动指定水印 + 导出位置 + 启动控制 ==========
         list_card_outer = tk.Frame(left_col, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1)
@@ -647,8 +650,10 @@ class AutoClipApp(tk.Tk):
         self.btn_toggle_log = ttk.Button(act_row, text="展开详细日志 ▾", style="Soft.TButton", command=self._toggle_log)
         self.btn_toggle_log.pack(side=tk.RIGHT)
 
-        # 单行简洁状态 + 可折叠详细日志
-        ttk.Label(foot_card, textvariable=self.var_last_log, style="CardMuted.TLabel").pack(anchor=tk.W, pady=(8, 0))
+        # 单行简洁状态（固定最大字符宽，绝不撑破布局）+ 可折叠详细日志
+        ttk.Label(
+            foot_card, textvariable=self.var_last_log, style="CardMuted.TLabel", width=62, anchor=tk.W
+        ).pack(fill=tk.X, pady=(8, 0))
         self.log_wrap = ttk.Frame(foot_card, style="Card.TFrame")
         self.log_text = tk.Text(self.log_wrap, height=7, font=("Microsoft YaHei UI", 8), bg="#F8FAFC", relief="flat", state=tk.DISABLED)
         ls = ttk.Scrollbar(self.log_wrap, orient=tk.VERTICAL, command=self.log_text.yview)
@@ -1099,7 +1104,8 @@ class AutoClipApp(tk.Tk):
             threading.Thread(target=self.pipeline.cancel, daemon=True).start()
 
     def _append_log(self, msg: str) -> None:
-        self.var_last_log.set(msg)
+        short_msg = msg if len(msg) <= 68 else (msg[:65] + "...")
+        self.var_last_log.set(short_msg)
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, msg + "\n")
         self.log_text.see(tk.END)
@@ -1143,13 +1149,35 @@ class AutoClipApp(tk.Tk):
                     payload()
                 elif kind == "done":
                     results: list[TaskStatus] = payload
-                    ok_n = sum(1 for r in results if r.state in ("已完成", "已跳过"))
+                    new_ok = sum(1 for r in results if r.state == "已完成")
+                    skip_n = sum(1 for r in results if r.state == "已跳过")
                     fail_n = sum(1 for r in results if r.state == "失败")
-                    self._append_log(f"=== 批量剪辑结束：成功/跳过 {ok_n} 条，失败 {fail_n} 条 ===")
+                    cancel_n = sum(1 for r in results if r.state == "已取消")
+                    # 统计实际落盘成品数量（按账号汇总核对）
+                    acc_counts: dict[str, int] = {}
+                    for r in results:
+                        if r.state in ("已完成", "已跳过"):
+                            k = r.account_name or "无水印"
+                            acc_counts[k] = acc_counts.get(k, 0) + 1
+                    acc_summary = "，".join(f"{k}:{v}条" for k, v in acc_counts.items())
+                    self._append_log(
+                        f"=== 批量结束：新剪成功 {new_ok} 条，跳过已有 {skip_n} 条，失败 {fail_n} 条"
+                        + (f"（按账号：{acc_summary}）" if acc_summary else "")
+                        + " ==="
+                    )
                     self.btn_start.configure(state=tk.NORMAL)
                     self.btn_retry.configure(state=tk.NORMAL)
                     self.btn_stop.configure(state=tk.DISABLED)
-                    messagebox.showinfo("批量剪辑完成", f"全部任务已结束！\n成功：{ok_n} 条\n失败：{fail_n} 条")
+                    detail_lines = [
+                        f"新剪成功：{new_ok} 条",
+                        f"跳过已有：{skip_n} 条",
+                        f"失败：{fail_n} 条",
+                    ]
+                    if cancel_n:
+                        detail_lines.append(f"已取消：{cancel_n} 条")
+                    if acc_summary:
+                        detail_lines.append(f"\n按账号产出：{acc_summary}")
+                    messagebox.showinfo("批量剪辑完成", "\n".join(detail_lines))
         except queue.Empty:
             pass
         self.after(120, self._poll_ui_queue)

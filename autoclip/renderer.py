@@ -448,6 +448,8 @@ def render_video(
         if cfg.output_format.lower() == "mp4":
             meta_args.extend(["-movflags", "+faststart"])
 
+        # 原子写入保护：先输出到临时文件，完整渲染成功后再重命名为正式成品，彻底杜绝半截损坏文件
+        tmp_out_path = output_path.with_name(f".{output_path.stem}.tmp{output_path.suffix}")
         cmd = [
             ffmpeg,
             "-y",
@@ -462,7 +464,7 @@ def render_video(
             *enc_args,
             *audio_args,
             *meta_args,
-            str(output_path),
+            str(tmp_out_path),
         ]
 
         if log_cb:
@@ -506,15 +508,19 @@ def render_video(
             unregister_proc(proc)
 
         if cancel_event is not None and cancel_event.is_set():
-            # 清理被中途停止的残缺成片，避免留下损坏文件
             try:
-                if output_path.is_file():
-                    output_path.unlink()
+                if tmp_out_path.is_file():
+                    tmp_out_path.unlink()
             except Exception:
                 pass
             raise InterruptedError("用户已停止任务")
 
         if ret != 0:
+            try:
+                if tmp_out_path.is_file():
+                    tmp_out_path.unlink()
+            except Exception:
+                pass
             # 若 NVENC 异常（例如驱动过旧或超出会话上限），自动回退 libx264 重试一次
             if encoder == "h264_nvenc":
                 if log_cb:
@@ -534,6 +540,10 @@ def render_video(
                     en_bottom_pct=en_bottom_pct,
                 )
             raise RuntimeError("FFmpeg 渲染失败：\n" + "\n".join(stderr_tail[-10:]))
+
+        if not tmp_out_path.is_file() or tmp_out_path.stat().st_size < 10_000:
+            raise RuntimeError("FFmpeg 未产出有效成品文件，请检查磁盘空间或原视频。")
+        tmp_out_path.replace(output_path)
 
         if progress_cb:
             progress_cb(1.0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import threading
 import time
@@ -35,21 +36,33 @@ def _safe_folder_name(name: str) -> str:
     return cleaned or "默认账号"
 
 
-def _safe_stem(stem: str, max_len: int = 80) -> str:
+def _safe_stem(stem: str, unique_seed: str = "", max_len: int = 72) -> str:
+    """安全化文件名，超长截断时永远保留尾部序号并附加短哈希，彻底杜绝同名视频互相覆盖吃掉文件！"""
     cleaned = re.sub(r'[\\/:*?"<>|\r\n]+', "_", stem).strip(" .")
+    if not cleaned:
+        cleaned = "video"
     if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len].rstrip(" .")
-    return cleaned or "video"
+        # 保留前 48 字 + 末尾 14 字（保留 (1)/(2) 等序号）+ 6 位路径哈希，确保 100% 唯一
+        h = hashlib.md5((unique_seed or stem).encode("utf-8", errors="ignore")).hexdigest()[:6]
+        head = cleaned[:48].rstrip(" .")
+        tail = cleaned[-14:].lstrip(" .")
+        cleaned = f"{head}_{tail}_{h}"
+    return cleaned
 
 
-def resolve_output_path(video_path: Path, cfg: AppConfig, account_name: str = "") -> Path:
+def resolve_output_path(
+    video_path: Path, cfg: AppConfig, account_name: str = "", extra_suffix: str = ""
+) -> Path:
     ext = "mov" if cfg.output_format.lower() == "mov" else "mp4"
     if cfg.output_dir.strip():
         base_dir = Path(cfg.output_dir.strip())
     else:
         base_dir = video_path.parent / "已剪辑输出"
 
-    safe_v = _safe_stem(video_path.stem)
+    safe_v = _safe_stem(video_path.stem, unique_seed=str(video_path.resolve()))
+    if extra_suffix:
+        safe_v = f"{safe_v}_{extra_suffix}"
+
     acc = account_name.strip()
     if acc and cfg.group_output_by_account:
         safe_acc = _safe_folder_name(acc)
@@ -137,7 +150,9 @@ class BatchPipeline:
             n = 1
         return n, n, max(n, 2)
 
-    def process_single(self, video_path: Path, account_name: str = "") -> TaskStatus:
+    def process_single(
+        self, video_path: Path, account_name: str = "", pre_out_path: Optional[Path] = None
+    ) -> TaskStatus:
         name = video_path.name
         t0 = time.time()
         if self._cancel_event.is_set():
@@ -146,7 +161,7 @@ class BatchPipeline:
             return st
 
         try:
-            out_path = resolve_output_path(video_path, self.cfg, account_name=account_name)
+            out_path = pre_out_path or resolve_output_path(video_path, self.cfg, account_name=account_name)
             if self.cfg.skip_existing and out_path.is_file() and out_path.stat().st_size > 100_000:
                 self._log(f"[{name}] 已存在成品，自动跳过：{out_path.name}")
                 st = TaskStatus(video_path, "已跳过", 1.0, f"已有成品：{out_path.name}", out_path, account_name)
@@ -298,26 +313,40 @@ class BatchPipeline:
             )
             pairs = list(zip(vps, assigned))
 
+        # 启动前为每一条视频预分配 100% 唯一的输出路径（彻底杜绝任何同名覆盖导致“吃掉视频”）
+        used_paths: set[str] = set()
+        triples: list[tuple[Path, str, Path]] = []
+        for idx_i, (vp, acc) in enumerate(pairs, start=1):
+            candidate = resolve_output_path(vp, self.cfg, account_name=acc)
+            key = str(candidate).lower()
+            if key in used_paths:
+                candidate = resolve_output_path(vp, self.cfg, account_name=acc, extra_suffix=f"v{idx_i}")
+                key = str(candidate).lower()
+            used_paths.add(key)
+            triples.append((vp, acc, candidate))
+
         mode_desc = (
             f"显卡并行加速（总流水线 {total_w} 路，同时压制 {render_w} 路）"
             if total_w > 1
             else "单路顺序剪辑"
         )
-        self._log(f"开始批量剪辑，共 {len(pairs)} 条视频 | 模式：{mode_desc}")
+        self._log(f"开始批量剪辑，共 {len(triples)} 条视频 | 模式：{mode_desc}")
 
-        for vp, acc in pairs:
+        for vp, acc, _ in triples:
             self._emit(vp, "等待中", 0.0, "排队中...", account_name=acc)
 
         results: list[TaskStatus] = []
-        if total_w <= 1 or len(pairs) == 1:
-            for vp, acc in pairs:
+        if total_w <= 1 or len(triples) == 1:
+            for vp, acc, op in triples:
                 if self._cancel_event.is_set():
                     break
-                results.append(self.process_single(vp, account_name=acc))
+                results.append(self.process_single(vp, account_name=acc, pre_out_path=op))
             return results
 
         with ThreadPoolExecutor(max_workers=total_w) as pool:
-            fut_map = {pool.submit(self.process_single, vp, acc): vp for vp, acc in pairs}
+            fut_map = {
+                pool.submit(self.process_single, vp, acc, op): vp for vp, acc, op in triples
+            }
             for fut in as_completed(fut_map):
                 results.append(fut.result())
         return results

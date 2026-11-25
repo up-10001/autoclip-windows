@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -383,7 +384,9 @@ def translate_segments(
             log_cb(f"正在调用 DeepSeek 翻译与智能断句（第 {b_idx + 1}/{total_batches} 批）...")
 
         last_err: Optional[Exception] = None
-        for attempt in range(3):
+        for attempt in range(4):
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("用户已停止任务")
             try:
                 batch_subs = _call_deepseek_id_batch(
                     batch, cfg, strict_visual_sync=strict_visual_sync
@@ -393,8 +396,11 @@ def translate_segments(
                 break
             except Exception as e:
                 last_err = e
-                if attempt < 2 and log_cb:
-                    log_cb(f"DeepSeek 请求波动，正在第 {attempt + 2} 次重试...")
+                if attempt < 3:
+                    wait_s = 2 ** (attempt + 1)
+                    if log_cb:
+                        log_cb(f"DeepSeek 网络波动，{wait_s} 秒后进行第 {attempt + 2} 次重试...")
+                    time.sleep(wait_s)
         if last_err is not None:
             raise RuntimeError(f"DeepSeek 翻译失败：{last_err}") from last_err
 
