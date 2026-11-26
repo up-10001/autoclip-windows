@@ -320,14 +320,33 @@ def render_video(
 
     with tempfile.TemporaryDirectory(prefix="autoclip_render_") as tmp_str:
         tmp_dir = Path(tmp_str)
+
+        # 深度隐形去重参数（参考 GitHub 主流去重引擎：肉眼无感但彻底改写时序/pHash/声纹/GOP）
+        rng = random.Random()
+        dedup = (cfg.dedup_level or "deep").lower()
+        is_deep = dedup == "deep"
+        speed = round(rng.uniform(1.015, 1.032), 4) if is_deep else 1.0
+        trim_start = round(rng.uniform(0.15, 0.32), 2) if (is_deep and info.duration > 10.0) else 0.0
+        trim_end_cut = round(rng.uniform(0.15, 0.30), 2) if (is_deep and info.duration > 10.0) else 0.0
+        trimmed_dur = max(1.0, info.duration - trim_start - trim_end_cut)
+        effective_duration = trimmed_dur / speed
+
+        # 同步重映射字幕时间轴，确保微变速 + 微掐头后中英文字幕依然 100% 严丝合缝！
+        mapped_subs: list[SubtitleItem] = []
+        for it in subtitles:
+            ns = max(0.0, (it.start - trim_start) / speed)
+            ne = min(effective_duration, (it.end - trim_start) / speed)
+            if ne > ns + 0.08:
+                mapped_subs.append(SubtitleItem(index=it.index, start=ns, end=ne, text=it.text))
+
         ass_path = write_ass_subtitle(
-            subtitles,
+            mapped_subs,
             tmp_dir / "sub.ass",
             info.width,
             info.height,
             cfg,
             watermark_text=watermark_text,
-            video_duration=info.duration,
+            video_duration=effective_duration,
             en_top_pct=en_top_pct,
             en_bottom_pct=en_bottom_pct,
         )
@@ -347,37 +366,54 @@ def render_video(
         inputs: list[str] = []
         if use_cuda_decode:
             inputs.extend(["-hwaccel", "cuda"])
+        if trim_start > 0.0:
+            inputs.extend(["-ss", f"{trim_start:.2f}"])
         inputs.extend(["-i", str(effective_input)])
         filter_chains: list[str] = []
         v_cur = "[0:v]"
 
-        # 1. 极速高清增强（去掉极吃 CPU 的 hqdn3d 3D降噪，改用轻量 3x3 亮度锐化+对比度，CPU 占用降 60%）
+        # 1. 极速高清增强（轻量 3x3 亮度锐化+对比度）
         if effective_enhance == "fast":
             filter_chains.append(
                 f"{v_cur}unsharp=3:3:0.65:3:3:0.0,eq=contrast=1.03:saturation=1.04[v_hd]"
             )
             v_cur = "[v_hd]"
 
-        # 2. 隐形基础去重（使用高速 bilinear 缩放替代重型 lanczos + 极微弱人眼无感调色偏移）
-        rng = random.Random()
-        if cfg.dedup_level in ("light", "standard"):
-            zoom = 1.012 if cfg.dedup_level == "standard" else 1.006
+        # 2. 隐形基础/深度去重（微缩放偏移裁剪 + 四维色彩扰动 + 动态微噪点 + 微幅变速）
+        if dedup in ("light", "standard", "deep"):
+            if is_deep:
+                zoom = round(rng.uniform(1.016, 1.028), 4)
+            elif dedup == "standard":
+                zoom = 1.012
+            else:
+                zoom = 1.006
             sw = int(round(info.width * zoom))
             sh = int(round(info.height * zoom))
             sw += sw % 2
             sh += sh % 2
-            cx = (sw - info.width) // 2
-            cy = (sh - info.height) // 2
+            # 在中心点附近做 ±2px 随机微偏移裁剪，彻底打乱像素网格
+            max_jx = max(0, (sw - info.width) // 2)
+            max_jy = max(0, (sh - info.height) // 2)
+            cx = (sw - info.width) // 2 + (rng.randint(-min(2, max_jx), min(2, max_jx)) if is_deep else 0)
+            cy = (sh - info.height) // 2 + (rng.randint(-min(2, max_jy), min(2, max_jy)) if is_deep else 0)
 
-            eq_part = ""
-            if cfg.dedup_level == "standard":
-                bri = round(rng.uniform(-0.008, 0.010), 4)
-                con = round(rng.uniform(1.005, 1.018), 4)
-                sat = round(rng.uniform(1.005, 1.020), 4)
-                eq_part = f",eq=brightness={bri}:contrast={con}:saturation={sat}"
+            extra_parts: list[str] = []
+            if dedup in ("standard", "deep"):
+                bri = round(rng.uniform(-0.010, 0.012), 4)
+                con = round(rng.uniform(1.006, 1.022), 4)
+                sat = round(rng.uniform(1.006, 1.024), 4)
+                gam = round(rng.uniform(0.988, 1.014), 4) if is_deep else 1.0
+                extra_parts.append(f"eq=brightness={bri}:contrast={con}:saturation={sat}:gamma={gam}")
+            if is_deep:
+                # 极微弱时空随机噪点（alls=2 肉眼完全无感，但彻底重建每帧感知哈希）
+                extra_parts.append("noise=alls=2:allf=t+u")
+                # 微幅随机变速（1.015x~1.032x），改变全部帧时间戳
+                pts_scale = round(1.0 / speed, 5)
+                extra_parts.append(f"setpts={pts_scale}*PTS")
 
+            extra_str = ("," + ",".join(extra_parts)) if extra_parts else ""
             filter_chains.append(
-                f"{v_cur}scale={sw}:{sh}:flags=fast_bilinear,crop={info.width}:{info.height}:{cx}:{cy}{eq_part}[v_base]"
+                f"{v_cur}scale={sw}:{sh}:flags=fast_bilinear,crop={info.width}:{info.height}:{cx}:{cy}{extra_str}[v_base]"
             )
             v_cur = "[v_base]"
 
@@ -419,12 +455,21 @@ def render_video(
         filter_chains.append(f"{v_cur}{f_arg}{fps_part}[v_out]")
         filter_complex = ";".join(filter_chains)
 
-        # 4. 音频滤镜：响度均衡（清晰防爆音，适合中老年人）+ 隐形音频指纹微调
+        # 4. 音频滤镜：深度声纹重写（同步微变速 + 0.5%无感微变调 + 人声EQ + 响度均衡）
         audio_args: list[str] = []
         if info.has_audio:
             af_parts: list[str] = []
-            if cfg.dedup_level == "standard":
-                # 极轻微人声频段清晰度微调（同时改变音频指纹）
+            if is_deep:
+                # 极微弱音高微移（±0.6% 人耳无感，但彻底改写声纹梅尔频谱）+ 保持总时长与视频完全同步
+                pitch = round(rng.choice([0.994, 1.006]), 4)
+                atempo_val = round(speed / pitch, 5)
+                af_parts.append(f"asetrate=44100*{pitch}")
+                af_parts.append("aresample=44100")
+                af_parts.append(f"atempo={atempo_val}")
+                af_parts.append("highpass=f=48")
+                af_parts.append("equalizer=f=2800:t=q:w=1.5:g=1.2")
+                af_parts.append("equalizer=f=8500:t=q:w=2.0:g=-0.8")
+            elif dedup == "standard":
                 af_parts.append("highpass=f=45")
                 af_parts.append("equalizer=f=2800:t=q:w=1.5:g=1.0")
             if cfg.audio_loudnorm:
@@ -437,6 +482,9 @@ def render_video(
 
         encoder = hw.recommended_video_encoder
         enc_args = _build_video_encoder_args(encoder, cfg.video_bitrate_mbps)
+        if is_deep:
+            # 随机关键帧间隔 GOP（45~75），彻底改变封装结构特征
+            enc_args.extend(["-g", str(rng.randint(45, 75))])
 
         # 彻底清除原始元数据并写入随机去重标识
         meta_args = [
@@ -444,7 +492,11 @@ def render_video(
             "-1",
             "-metadata",
             f"comment={uuid.uuid4().hex[:12]}",
+            "-metadata",
+            f"title=clip_{uuid.uuid4().hex[:8]}",
         ]
+        if trim_end_cut > 0.0:
+            meta_args.extend(["-t", f"{effective_duration:.2f}"])
         if cfg.output_format.lower() == "mp4":
             meta_args.extend(["-movflags", "+faststart"])
 

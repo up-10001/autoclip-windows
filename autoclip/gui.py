@@ -35,6 +35,11 @@ ENHANCE_OPTIONS = [
     ("真·AI超清（较慢）", "ai"),
     ("关闭", "off"),
 ]
+DEDUP_OPTIONS = [
+    ("深度隐形去重（推荐，6重无感防搬运）", "deep"),
+    ("标准隐形去重", "standard"),
+    ("关闭", "off"),
+]
 SPEED_OPTIONS = [
     ("智能自动（3060 并行 4 路）", "auto"),
     ("一条一条顺序剪（低占用）", "1"),
@@ -512,6 +517,7 @@ class AutoClipApp(tk.Tk):
         self.var_output_dir = tk.StringVar(value=self.cfg.output_dir)
         self.var_output_fmt = tk.StringVar(value=self.cfg.output_format.lower())
         self.var_enhance = tk.StringVar(value=_code_to_label(ENHANCE_OPTIONS, self.cfg.enhance_mode))
+        self.var_dedup_level = tk.StringVar(value=_code_to_label(DEDUP_OPTIONS, self.cfg.dedup_level))
         self.var_feathered_mask = tk.BooleanVar(value=self.cfg.enable_feathered_mask)
         self.var_gen_copy = tk.BooleanVar(value=self.cfg.generate_copywriting)
         self.var_review = tk.BooleanVar(value=self.cfg.review_subtitles)
@@ -759,6 +765,13 @@ class AutoClipApp(tk.Tk):
         cb_e.pack(side=tk.LEFT, fill=tk.X, expand=True)
         cb_e.bind("<<ComboboxSelected>>", lambda *_: self._auto_save())
 
+        d_row = ttk.Frame(quick_card, style="Card.TFrame")
+        d_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(d_row, text="隐形去重:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        cb_d = ttk.Combobox(d_row, textvariable=self.var_dedup_level, values=[x[0] for x in DEDUP_OPTIONS], state="readonly", width=22)
+        cb_d.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        cb_d.bind("<<ComboboxSelected>>", lambda *_: self._auto_save())
+
         ttk.Checkbutton(quick_card, text="无痕羽化蒙版去重（顶部柔化，看不出切缝）", variable=self.var_feathered_mask, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
         ttk.Checkbutton(quick_card, text="自动生成微信视频号文案（同步保存 txt）", variable=self.var_gen_copy, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
         ttk.Checkbutton(quick_card, text="导出前弹窗校对中文字幕（半自动微调）", variable=self.var_review, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
@@ -792,6 +805,7 @@ class AutoClipApp(tk.Tk):
         self.cfg.output_dir = self.var_output_dir.get().strip()
         self.cfg.output_format = self.var_output_fmt.get().lower()
         self.cfg.enhance_mode = _label_to_code(ENHANCE_OPTIONS, self.var_enhance.get())
+        self.cfg.dedup_level = _label_to_code(DEDUP_OPTIONS, self.var_dedup_level.get())
         self.cfg.enable_feathered_mask = self.var_feathered_mask.get()
         self.cfg.generate_copywriting = self.var_gen_copy.get()
         self.cfg.review_subtitles = self.var_review.get()

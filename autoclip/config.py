@@ -72,7 +72,7 @@ class AppConfig:
     mask_height_pct: float = 22.0  # 移至画面上部 22%（避开人脸）+ 160px 超宽羽化，彻底消除切缝感
     mask_feather_px: int = 160
     mask_shift_px: int = 12  # 对应手动偏移效果，配合超宽羽化做到肉眼无感
-    dedup_level: str = "standard"  # off / light / standard
+    dedup_level: str = "deep"  # off / standard / deep（深度隐形去重：微变速+掐头去尾+微噪点+声纹重写+随机GOP）
 
     # 画质超清增强：off / fast（极速高清增强） / ai（Real-ESRGAN 真AI超清）
     enhance_mode: str = "fast"
