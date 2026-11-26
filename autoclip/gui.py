@@ -312,6 +312,46 @@ class AssignWatermarkDialog(tk.Toplevel):
         self.destroy()
 
 
+class CopywritingDialog(tk.Toplevel):
+    """查看并一键复制微信视频号发布文案的弹窗。"""
+
+    def __init__(self, parent: tk.Tk, video_name: str, copy_text: str) -> None:
+        super().__init__(parent)
+        self.title(f"微信视频号发布文案 - {video_name}")
+        self.geometry("620x420")
+        self.configure(bg=BG_CARD)
+        self.transient(parent)
+        self.grab_set()
+
+        body = ttk.Frame(self, padding=14, style="Card.TFrame")
+        body.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            body,
+            text="已自动保存到成品同目录的【_视频号文案.txt】及【全部视频号文案汇总.txt】，也可直接点下方一键复制：",
+            style="CardMuted.TLabel",
+            wraplength=580,
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        self.txt = tk.Text(body, font=("Microsoft YaHei UI", 10), bg="#F8FAFC", relief="flat", wrap=tk.WORD, padx=10, pady=10)
+        self.txt.pack(fill=tk.BOTH, expand=True)
+        self.txt.insert("1.0", copy_text)
+
+        btns = ttk.Frame(body, style="Card.TFrame")
+        btns.pack(fill=tk.X, pady=(10, 0))
+        self.lbl_copied = ttk.Label(btns, text="", foreground=ACCENT_GREEN, style="CardBold.TLabel")
+        self.lbl_copied.pack(side=tk.LEFT)
+        ttk.Button(btns, text="关闭", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="📋 一键复制全部文案", style="Primary.TButton", command=self._copy_all).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _copy_all(self) -> None:
+        content = self.txt.get("1.0", tk.END).strip()
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.update()
+        self.lbl_copied.configure(text="✅ 已复制到剪贴板，可直接去视频号粘贴！")
+
+
 class SubtitleReviewDialog(tk.Toplevel):
     """压制前字幕校对弹窗。"""
 
@@ -388,6 +428,8 @@ class AutoClipApp(tk.Tk):
         self.video_list: list[Path] = []
         self.video_watermarks: dict[Path, str] = {}
         self.video_states: dict[Path, str] = {}
+        self.video_copywritings: dict[Path, str] = {}
+        self.video_out_paths: dict[Path, Path] = {}
         self.tree_ids: dict[Path, str] = {}
 
         self.accounts: list[dict[str, Any]] = [
@@ -471,6 +513,7 @@ class AutoClipApp(tk.Tk):
         self.var_output_fmt = tk.StringVar(value=self.cfg.output_format.lower())
         self.var_enhance = tk.StringVar(value=_code_to_label(ENHANCE_OPTIONS, self.cfg.enhance_mode))
         self.var_feathered_mask = tk.BooleanVar(value=self.cfg.enable_feathered_mask)
+        self.var_gen_copy = tk.BooleanVar(value=self.cfg.generate_copywriting)
         self.var_review = tk.BooleanVar(value=self.cfg.review_subtitles)
 
         self.var_wm_enabled = tk.BooleanVar(value=self.cfg.watermark_enabled)
@@ -717,6 +760,7 @@ class AutoClipApp(tk.Tk):
         cb_e.bind("<<ComboboxSelected>>", lambda *_: self._auto_save())
 
         ttk.Checkbutton(quick_card, text="无痕羽化蒙版去重（顶部柔化，看不出切缝）", variable=self.var_feathered_mask, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
+        ttk.Checkbutton(quick_card, text="自动生成微信视频号文案（同步保存 txt）", variable=self.var_gen_copy, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
         ttk.Checkbutton(quick_card, text="导出前弹窗校对中文字幕（半自动微调）", variable=self.var_review, style="Card.TCheckbutton", command=self._auto_save).pack(anchor=tk.W, pady=2)
 
         # 卡片 3：实时画面预览
@@ -749,6 +793,7 @@ class AutoClipApp(tk.Tk):
         self.cfg.output_format = self.var_output_fmt.get().lower()
         self.cfg.enhance_mode = _label_to_code(ENHANCE_OPTIONS, self.var_enhance.get())
         self.cfg.enable_feathered_mask = self.var_feathered_mask.get()
+        self.cfg.generate_copywriting = self.var_gen_copy.get()
         self.cfg.review_subtitles = self.var_review.get()
         self.cfg.watermark_enabled = self.var_wm_enabled.get()
         self.cfg.watermark_floating = self.var_wm_floating.get()
@@ -861,11 +906,31 @@ class AutoClipApp(tk.Tk):
         if not self.tree.selection():
             return
         menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="📋 查看 / 复制微信视频号文案", command=self._on_view_copywriting)
         menu.add_command(label="指定水印账号...", command=self._on_tree_double_click_batch)
         menu.add_command(label="预览此视频字幕与水印", command=self._on_render_preview)
         menu.add_separator()
         menu.add_command(label="移除选中视频", command=self._on_remove_selected)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_view_copywriting(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vp = next((p for p, tid in self.tree_ids.items() if tid == sel[0]), None)
+        if not vp:
+            return
+        copy_txt = self.video_copywritings.get(vp, "")
+        if not copy_txt:
+            out_p = self.video_out_paths.get(vp)
+            if out_p:
+                cfile = out_p.with_name(f"{out_p.stem}_视频号文案.txt")
+                if cfile.is_file():
+                    copy_txt = cfile.read_text(encoding="utf-8-sig").strip()
+        if not copy_txt:
+            messagebox.showinfo("暂无文案", "该视频尚未生成视频号文案（请先完成剪辑并勾选“自动生成微信视频号文案”）。")
+            return
+        CopywritingDialog(self, vp.name, copy_txt)
 
     def _on_tree_double_click_batch(self) -> None:
         sel = self.tree.selection()
@@ -1121,6 +1186,10 @@ class AutoClipApp(tk.Tk):
                     st: TaskStatus = payload
                     prev_state = self.video_states.get(st.video_path, "")
                     self.video_states[st.video_path] = st.state
+                    if st.output_path is not None:
+                        self.video_out_paths[st.video_path] = st.output_path
+                    if st.copywriting:
+                        self.video_copywritings[st.video_path] = st.copywriting
                     iid = self.tree_ids.get(st.video_path)
                     if iid:
                         idx = self.video_list.index(st.video_path) + 1 if st.video_path in self.video_list else 0

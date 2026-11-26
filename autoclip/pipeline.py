@@ -18,7 +18,9 @@ from .ocr_sub import extract_onscreen_english_subtitles
 from .proc_mgr import kill_all_active_procs
 from .renderer import render_video
 from .subtitle import write_srt_subtitle
-from .translator import SubtitleItem, translate_segments
+from .translator import SubtitleItem, generate_shipinhao_copy, translate_segments
+
+_SUMMARY_FILE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -29,6 +31,7 @@ class TaskStatus:
     message: str = ""
     output_path: Optional[Path] = None
     account_name: str = ""
+    copywriting: str = ""
 
 
 def _safe_folder_name(name: str) -> str:
@@ -116,6 +119,7 @@ class BatchPipeline:
         message: str = "",
         output_path: Optional[Path] = None,
         account_name: str = "",
+        copywriting: str = "",
     ) -> None:
         if self.status_cb:
             self.status_cb(
@@ -126,6 +130,7 @@ class BatchPipeline:
                     message=message,
                     output_path=output_path,
                     account_name=account_name,
+                    copywriting=copywriting,
                 )
             )
 
@@ -274,16 +279,43 @@ class BatchPipeline:
                     en_bottom_pct=en_bottom_pct,
                 )
 
+            # 可选阶段 4：根据实际剧情自动生成微信视频号发布文案（与成片同名 .txt + 文件夹总汇总）
+            copy_text = ""
+            if self.cfg.generate_copywriting and not self._cancel_event.is_set():
+                self._emit(video_path, "生成文案", 0.98, "正在生成视频号发布文案...", out_path, account_name)
+                copy_text = generate_shipinhao_copy(
+                    subtitles,
+                    self.cfg,
+                    account_name=account_name,
+                    log_cb=lambda m: self._log(f"[{name}] {m}"),
+                )
+                if copy_text:
+                    copy_path = out_path.with_name(f"{out_path.stem}_视频号文案.txt")
+                    copy_path.write_text(copy_text + "\n", encoding="utf-8-sig")
+                    summary_path = out_path.parent / "全部视频号文案汇总.txt"
+                    block = (
+                        f"========================================\n"
+                        f"成品视频：{out_path.name}\n"
+                        f"所属账号：{account_name or '默认'}\n"
+                        f"========================================\n"
+                        f"{copy_text}\n\n"
+                    )
+                    with _SUMMARY_FILE_LOCK:
+                        with open(summary_path, "a", encoding="utf-8-sig") as sf:
+                            sf.write(block)
+
             elapsed = int(round(time.time() - t0))
+            copy_badge = " | 已生文案" if copy_text else ""
             st = TaskStatus(
                 video_path,
                 "已完成",
                 1.0,
-                f"耗时 {elapsed}秒 | {out_path.name}",
+                f"耗时 {elapsed}秒{copy_badge} | {out_path.name}",
                 out_path,
                 account_name,
+                copywriting=copy_text,
             )
-            self._emit(video_path, st.state, st.progress, st.message, st.output_path, account_name)
+            self._emit(video_path, st.state, st.progress, st.message, st.output_path, account_name, copy_text)
             return st
 
         except InterruptedError:

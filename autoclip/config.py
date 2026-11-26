@@ -91,6 +91,7 @@ class AppConfig:
     review_subtitles: bool = False
     keep_srt: bool = False
     skip_existing: bool = True  # 已导出过的视频自动跳过，防重复扣费
+    generate_copywriting: bool = True  # 剪辑完成后自动调用 DeepSeek 生成微信视频号发布文案
 
     def __post_init__(self) -> None:
         if not self.font_name:

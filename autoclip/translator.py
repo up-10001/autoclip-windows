@@ -411,3 +411,73 @@ def translate_segments(
     if log_cb:
         log_cb(f"翻译与语义断句完成，共生成 {len(normalized)} 条单行中文字幕。")
     return normalized
+
+
+def generate_shipinhao_copy(
+    subtitles: list[SubtitleItem],
+    cfg: AppConfig,
+    account_name: str = "",
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> str:
+    """根据视频实际中文字幕剧情，调用 DeepSeek 自动生成适合中国中老年观众的微信视频号发布文案。"""
+    if not subtitles or not cfg.api_key.strip():
+        return ""
+
+    transcript = "\n".join(it.text for it in subtitles if it.text.strip())
+    # 防止超长视频超出合理输入长度
+    if len(transcript) > 3500:
+        transcript = transcript[:3500] + "\n..."
+
+    system_prompt = (
+        "你是一位深耕微信视频号影视解说/美剧片段赛道的资深爆款文案编辑，非常了解中国中老年观众的阅读喜好与视频号推荐机制。\n"
+        "请根据下面这段视频的完整中文字幕剧情，创作一套可以直接复制发到微信视频号的发布文案。\n\n"
+        "严格要求：\n"
+        "1. 【短标题】8~16个汉字，有悬念或情感共鸣，不剧透结局，不用低俗违禁词，贴合中老年观众兴趣。\n"
+        "2. 【视频号正文】50~100个汉字，用通俗暖心、接地气的口语概括这段剧情最抓人的看点，并在结尾加一句自然的互动提问（引导中老年观众在评论区发表看法、点赞或转发给老朋友）。\n"
+        "3. 【话题标签】紧跟在正文后面，给出 4~5 个精准高流量微信视频号话题（以 # 开头，空格分隔，例如 #高分好剧 #影视片段 #暖心瞬间 #生活感悟 #精彩美剧）。\n"
+        "4. 直接按下面固定格式输出纯文本，不要额外解释：\n\n"
+        "【短标题】\n"
+        "（这里写短标题）\n\n"
+        "【正文文案（可直接复制发布）】\n"
+        "（这里写正文）\n"
+        "#话题1 #话题2 #话题3 #话题4"
+    )
+
+    user_prompt = f"以下是该视频的完整中文字幕剧情内容：\n{transcript}"
+    if account_name.strip():
+        user_prompt = f"发布账号名称：{account_name.strip()}\n" + user_prompt
+
+    url = f"{_normalize_base_url(cfg.api_base_url)}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {cfg.api_key.strip()}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": cfg.api_model.strip() or "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 500,
+    }
+
+    if log_cb:
+        log_cb("正在根据剧情生成微信视频号发布文案...")
+
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            text = str(data["choices"][0]["message"]["content"]).strip()
+            if log_cb:
+                log_cb("微信视频号文案生成完成！")
+            return text
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+            elif log_cb:
+                log_cb(f"视频号文案生成跳过（网络波动：{e}），不影响成品导出。")
+    return ""
